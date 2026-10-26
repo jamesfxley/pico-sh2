@@ -1,0 +1,25 @@
+# Doxygen configuration for the pico-sh2 API reference.
+#
+# Everything that does not vary lives in infra/house/config/Doxyfile.base; only the fields
+# below differ between repositories. Doxygen applies assignments in order, so
+# these win over the include.
+#
+#   doxygen docs/Doxyfile      (output: docs/api/html/index.html, gitignored)
+#
+# HIDE_UNDOC_MEMBERS and HIDE_UNDOC_CLASSES stay NO in the base: with them YES
+# the undocumented-entity warning is suppressed for exactly the entities it
+# exists to report.
+
+@INCLUDE_PATH = infra/house/config
+@INCLUDE      = Doxyfile.base
+
+PROJECT_NAME  = pico-sh2
+PROJECT_BRIEF = "SH-2/SHTP protocol library for the CEVA/Hillcrest sensor hubs"
+INCLUDE_PATH  = src/sh2/include
+
+INPUT         = src/include \
+                src/util/include \
+                src/shtp/include \
+                src/reports/include \
+                src/sh2/include \
+                src/testing/include

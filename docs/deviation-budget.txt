@@ -1,0 +1,2 @@
+# Per-language suppression ceilings (EN-00.6); lower counts ratchet down.
+cxx = 18

@@ -1,0 +1,16 @@
+# Library-owned overrides inheriting the House-synced root configuration.
+#
+# Every entry below is one that actually fires here. A rule disabled where it
+# reports nothing is silent coverage loss for every file added later, not an
+# exemption, so a rule this tree merely *could* justify turning off is left on.
+InheritParentConfig: true
+
+Checks: >
+  -readability-magic-numbers
+
+# readability-magic-numbers: this tree is largely a transcription of
+# a wire format. The seeded report-length table, the byte-order shifts and
+# masks, the report field offsets and the FRS record IDs are the specification's
+# numbers, cited to the manual and section that defines each. Naming every one
+# would add a layer of indirection between the code and the document it has to
+# be checked against, which is the opposite of what the check is for.

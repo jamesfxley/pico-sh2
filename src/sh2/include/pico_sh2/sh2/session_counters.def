@@ -1,0 +1,47 @@
+// The normative session counter set (OR-1), as an X-macro list. This file is
+// the single definition of what the counters are and what each one means: the
+// SessionCounters struct and for_each_counter() are both generated from it, so
+// a consumer that reports counters by name never carries its own copy of the
+// schema and cannot drift from this one.
+//
+// Include it with PICO_SH2_COUNTER(name, description) defined; the macro is
+// invoked once per counter and left defined for the includer to #undef.
+//
+// Every counter is a 32-bit count that wraps modulo 2^32, never decreases
+// otherwise, and is cleared only by construction (OR-1).
+
+// --- transport (mirrored from the SHTP framing engine) ---
+PICO_SH2_COUNTER(cargoes_in, "complete cargoes reassembled")
+PICO_SH2_COUNTER(cargoes_out, "frames written to the hub")
+PICO_SH2_COUNTER(write_errors, "frame writes the transport refused; retried")
+PICO_SH2_COUNTER(empty_transfers, "zero-length idle reads")
+PICO_SH2_COUNTER(bad_headers, "reserved or malformed SHTP headers")
+PICO_SH2_COUNTER(reassembly_drops, "oversize or interleaved cargoes dropped")
+PICO_SH2_COUNTER(sequence_gaps, "per-channel receive-sequence gaps")
+
+// --- lifecycle ---
+PICO_SH2_COUNTER(startup_timeouts, "startup-phase deadline expiries")
+PICO_SH2_COUNTER(protocol_errors, "out-of-sequence or malformed control cargoes")
+PICO_SH2_COUNTER(resets, "hub resets recovered from (SR-5)")
+// Breakdown of `resets`: those recognised from a transport error while READY
+// rather than from a re-advertisement or reset-complete.
+PICO_SH2_COUNTER(transport_restarts, "resets recognised from a transport error")
+PICO_SH2_COUNTER(unrouted_cargoes, "cargoes with no handler in the current state")
+PICO_SH2_COUNTER(hub_error_lists, "SHTP Error List responses from the hub")
+
+// --- input decode (mirrored from the cargo walk) ---
+PICO_SH2_COUNTER(events_decoded, "input reports decoded to events")
+PICO_SH2_COUNTER(reports_skipped, "known-length reports with no compiled decoder")
+PICO_SH2_COUNTER(unknown_reports, "input walk aborted: unknown report length")
+PICO_SH2_COUNTER(truncated_reports, "input walk aborted: report overran the cargo or its record")
+
+// --- control transactions ---
+PICO_SH2_COUNTER(commands_sent, "command requests issued")
+PICO_SH2_COUNTER(command_completions, "solicited command responses matched")
+PICO_SH2_COUNTER(command_timeouts, "outstanding-command deadline expiries")
+PICO_SH2_COUNTER(feature_responses, "Get Feature responses routed")
+PICO_SH2_COUNTER(frs_completions, "FRS reads/writes that finished successfully")
+PICO_SH2_COUNTER(frs_timeouts, "FRS operations that passed their deadline")
+PICO_SH2_COUNTER(frs_stray_responses, "FRS responses to no running operation: another record, or one the session ended")
+PICO_SH2_COUNTER(flushes_requested, "Force Sensor Flush reports sent to the hub")
+PICO_SH2_COUNTER(flushes_completed, "Flush Completed reports received")

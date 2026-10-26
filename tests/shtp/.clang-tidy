@@ -1,0 +1,11 @@
+# Test-tree overrides layered on tests/.clang-tidy, the library-owned test overlay, which is what disables readability-magic-numbers here.
+# Nothing under tests/ inherits src/.clang-tidy: they are siblings. Only the rules this
+# particular tree needs are listed: a rule disabled where it fires nowhere is
+# unaccountable coverage loss for every file added later.
+InheritParentConfig: true
+
+Checks: >
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic
+
+# cppcoreguidelines-pro-bounds-pointer-arithmetic: a fuzz entry point receives a
+# pointer and a length, and turning them into a span is the arithmetic.

@@ -1,0 +1,12 @@
+# Test-tree overrides layered on tests/.clang-tidy, the library-owned test overlay, which is what disables readability-magic-numbers here.
+# Nothing under tests/ inherits src/.clang-tidy: they are siblings. Only the rules this
+# particular tree needs are listed: a rule disabled where it fires nowhere is
+# unaccountable coverage loss for every file added later.
+InheritParentConfig: true
+
+Checks: >
+  -bugprone-unchecked-optional-access
+
+# bugprone-unchecked-optional-access: the guard is an
+# ASSERT_TRUE(x.has_value()), which returns from the test on failure — control
+# flow the check's dataflow analysis cannot see through a GoogleTest macro.

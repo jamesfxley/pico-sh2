@@ -1,0 +1,35 @@
+name = "pico-sh2"
+
+[infra]
+repository = "https://github.com/jamesfxley/pico-tooling.git"
+
+[[footprint]]
+name = "cross probe"
+elf = "build-firmware/tests/firmware/pico_sh2_cross_probe.elf"
+ram_kib = 8
+flash_kib = 48
+
+[[symbols]]
+name = "heap (sh2 objects)"
+mode = "objects"
+path = "build-firmware/src/sh2/CMakeFiles/pico_sh2_sh2.dir"
+sets = ["c-heap-alloc"]
+
+[[symbols]]
+name = "heap (shtp objects)"
+mode = "objects"
+path = "build-firmware/src/shtp/CMakeFiles/pico_sh2_shtp.dir"
+sets = ["c-heap-alloc"]
+
+[[symbols]]
+name = "heap (reports objects)"
+mode = "objects"
+path = "build-firmware/src/reports/CMakeFiles/pico_sh2_reports.dir"
+sets = ["c-heap-alloc"]
+
+[[symbols]]
+name = "heap refuses allocating fixture"
+mode = "objects"
+path = "build-firmware/tests/firmware/CMakeFiles/pico_sh2_allocating_fixture.dir"
+sets = ["c-heap-alloc"]
+expect = "refused"

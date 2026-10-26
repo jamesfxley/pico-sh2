@@ -1,0 +1,52 @@
+family = "infra"
+
+[house]
+platform = "infra/house"
+languages = ["cxx", "python"]
+licence = "MIT"
+
+[packages.root]
+path = "."
+consumer_executables = ["consumer_smoke"]
+[packages.root.modes]
+host = "build-test-install"
+firmware = "build"
+
+[[packages.root.consumer_cases]]
+name = "default"
+producer_args = ["-DPICO_SH2_PROFILE=default"]
+consumer_args = ["-DCMAKE_CXX_FLAGS=-DEXPECT_DEFAULT"]
+expect = "runs"
+
+[[packages.root.consumer_cases]]
+name = "large"
+producer_args = ["-DPICO_SH2_PROFILE=large"]
+consumer_args = ["-DCMAKE_CXX_FLAGS=-DEXPECT_LARGE"]
+expect = "runs"
+
+[[packages.root.consumer_cases]]
+name = "custom"
+producer_args = ["-DPICO_SH2_PROFILE=default", "-DPICO_SH2_PROFILE_HEADER=tests/consumer/profiles/custom.hpp"]
+consumer_args = ["-DCMAKE_CXX_FLAGS=-DEXPECT_CUSTOM"]
+expect = "runs"
+
+[[packages.root.consumer_cases]]
+name = "refused"
+producer_args = ["-DPICO_SH2_PROFILE=default", "-DPICO_SH2_PROFILE_HEADER=tests/consumer/profiles/refused.hpp"]
+expect = "fails"
+stage = "producer-build"
+message = "FRS_MAX_WORDS beyond a 16-bit word count"
+
+[[packages.root.consumer_cases]]
+name = "conflict"
+producer_args = ["-DPICO_SH2_PROFILE_HEADER=tests/consumer/profiles/conflict.hpp", "-DPICO_SH2_PROFILE=large"]
+expect = "fails"
+stage = "producer-configure"
+message = "both select a profile"
+
+[ci.axes]
+profile = "PICO_SH2_PROFILE"
+
+[[ci.require]]
+group = "build"
+matrix = { build_type = ["Debug", "Release"], sanitize = ["ON"], profile = ["default", "large"] }

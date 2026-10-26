@@ -1,0 +1,27 @@
+# Test-tree overrides layered on tests/.clang-tidy, the library-owned test overlay, which is what disables readability-magic-numbers here.
+# Nothing under tests/ inherits src/.clang-tidy: they are siblings. Only the rules this
+# particular tree needs are listed: a rule disabled where it fires nowhere is
+# unaccountable coverage loss for every file added later.
+InheritParentConfig: true
+
+Checks: >
+  -cppcoreguidelines-virtual-class-destructor,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-no-malloc,
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic
+
+# cppcoreguidelines-virtual-class-destructor: test doubles are constructed on
+# the stack of the test that owns them and are never deleted through a base
+# pointer.
+#
+# cppcoreguidelines-owning-memory and -no-malloc: the heap test overrides global
+# operator new/delete to count allocations, which is malloc and free by
+# definition.
+#
+# cppcoreguidelines-avoid-non-const-global-variables: the same override
+# communicates its tally through file-scope state, because operator new takes no
+# context argument.
+#
+# cppcoreguidelines-pro-bounds-pointer-arithmetic: a fuzz entry point receives a
+# pointer and a length, and turning them into a span is the arithmetic.
