@@ -66,7 +66,7 @@ TEST(MetadataQ, MapsRecordTypesToDecodedReportIds) {
 
 TEST(MetadataQ, RejectsRecordTypesOutsideTheDecodedSet) {
     // 0xE316 (significant motion) has a metadata record but no in-scope
-    // decoder.
+    // decoder (FW-2).
     EXPECT_FALSE(report_id_for_metadata_type(0xE316).has_value());
     // A non-metadata FRS record type.
     EXPECT_FALSE(report_id_for_metadata_type(0x2D3E).has_value());

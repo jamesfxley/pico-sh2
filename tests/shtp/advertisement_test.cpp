@@ -298,9 +298,9 @@ TEST(Advertisement, DoesNotOverrunOnAdversarialLengths) {
 }
 
 // SR-10: a GUID is at most four bytes -- this library's limit, UNCONFIRMED
-// against 1000-3535 §5.2 (NR-4). A longer value names no
-// application the roles could be bound to, and parsing it would shift past the
-// width of the GUID.
+// (FW-5) against 1000-3535 §5.2 (NR-4). A longer value names no application the
+// roles could be bound to, and parsing it would shift past the width of the
+// GUID.
 TEST(Advertisement, RejectsAGuidLongerThanFourBytes) {
     std::array<std::uint8_t, 7> cargo{0x01, 0x05, 0x02, 0x00, 0x00, 0x00, 0x07};
     Collector collector;
