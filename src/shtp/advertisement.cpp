@@ -28,7 +28,7 @@ std::span<const std::uint8_t> trim_name(std::span<const std::uint8_t> value) {
 
 // A GUID value is up to four bytes, LSB first. The LSB-first order is 1000-3535
 // §5.2's rule for multi-byte values; the four-byte width is this library's
-// limit, UNCONFIRMED (NR-4).
+// limit, UNCONFIRMED (NR-4, FW-5).
 constexpr std::size_t GUID_MAX_BYTES = sizeof(std::uint32_t);
 
 // The caller has refused a value longer than GUID_MAX_BYTES.
