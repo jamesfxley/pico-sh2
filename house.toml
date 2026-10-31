@@ -50,3 +50,8 @@ profile = "PICO_SH2_PROFILE"
 [[ci.require]]
 group = "build"
 matrix = { build_type = ["Debug", "Release"], sanitize = ["ON"], profile = ["default", "large"] }
+
+[[ci.require]]
+group = "firmware"
+matrix = { board = ["pico2_w", "pico2", "pico"] }
+prepare = ["python3 dev.py build", "python3 dev.py gate build-warnings"]

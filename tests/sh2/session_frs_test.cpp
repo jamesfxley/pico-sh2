@@ -231,10 +231,10 @@ TEST(Session, ARestartFromTheSinkDropsTheChainedRead) {
 }
 
 // SR-3: a completed read must cover every word below its highest. Whether the
-// hub may answer non-densely is UNCONFIRMED (1000-3625 §6.3.7 does not say), so
-// a gap ends the read as PROTOCOL rather than delivering a word nobody sent:
-// a dropped response, or the tail of an earlier read of the same record, looks
-// exactly like this.
+// hub may answer non-densely is UNCONFIRMED (FW-5; 1000-3625 §6.3.7 does not
+// say), so a gap ends the read as PROTOCOL rather than delivering a word nobody
+// sent: a dropped response, or the tail of an earlier read of the same record,
+// looks exactly like this.
 TEST(Session, FrsReadCompletingWithAGapIsProtocol) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -383,8 +383,8 @@ TEST(Session, FrsReadBusyEndsTheReadWithBusy) {
 }
 
 // SR-3: busy (2) ends a write the same way. What the hub does after a busy
-// write status is UNCONFIRMED (1000-3625 §6.3.5 lists the code only), so the
-// write is not left waiting on a response that may never come.
+// write status is UNCONFIRMED (FW-5; 1000-3625 §6.3.5 lists the code only), so
+// the write is not left waiting on a response that may never come.
 TEST(Session, FrsWriteBusyEndsTheWriteWithBusy) {
     FakeHub hub;
     Session session = make_session(hub);

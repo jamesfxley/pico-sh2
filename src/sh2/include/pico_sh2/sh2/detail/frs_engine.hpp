@@ -27,9 +27,9 @@
 /// a timed-out read would complete a retry of the same record.
 ///
 /// A completed read must cover every word below its highest. Whether the hub
-/// may answer a read non-densely is UNCONFIRMED (§6.3.7 does not say), and a
-/// gap is what a dropped response leaves, so the read ends PROTOCOL rather
-/// than delivering a word nobody sent.
+/// may answer a read non-densely is UNCONFIRMED (FW-5; §6.3.7 does not say),
+/// and a gap is what a dropped response leaves, so the read ends PROTOCOL
+/// rather than delivering a word nobody sent.
 ///
 /// The engine owns the transaction and the buffer; counters, the consumer's FRS
 /// sink, and the diagnostics hook stay with Session.
@@ -255,9 +255,9 @@ class FrsEngine {
             case frs_write_status::UNRECOGNIZED_TYPE:
                 return finish(Sh2Error::UNSUPPORTED, 0, status);
             case frs_write_status::BUSY:
-                // UNCONFIRMED what follows a busy write status (1000-3625
-                // §6.3.5 lists the code only), so the write ends here rather
-                // than waiting on a response that may never come.
+                // UNCONFIRMED (FW-5) what follows a busy write status
+                // (1000-3625 §6.3.5 lists the code only), so the write ends
+                // here rather than waiting on a response that may never come.
                 return finish(Sh2Error::BUSY, 0, status);
             default:
                 /// WRITE_FAILED / INVALID_LENGTH / RECORD_INVALID /

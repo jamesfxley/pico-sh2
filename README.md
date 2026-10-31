@@ -117,8 +117,9 @@ rather than truncated.
 
 ## Releases
 
-Versioning is semver: breaking changes only at a major version. The notes on
-each [release](https://github.com/jamesfxley/pico-sh2/releases) record what
+Versioning is semver (`EN-06.1`): a breaking change lands at a minor version
+bump while the major version is 0, and at a major version bump from 1.0. The
+notes on each [release](https://github.com/jamesfxley/pico-sh2/releases) record what
 changed and, for a break, what to change in your own code (`EN-06.3`).
 
 ## AI-assisted development
