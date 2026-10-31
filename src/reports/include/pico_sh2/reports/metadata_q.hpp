@@ -13,10 +13,10 @@
 /// The record header (words 0..8) is identical for record revisions 3 and 4, so
 /// word 7 is read the same way regardless of the revision in word 3. Q point 2
 /// applies to bias/accuracy unless otherwise noted (1000-3625 §5.1).
-/// Its applicability to GIRV angular velocity is UNCONFIRMED: §6.5.44 fixes
-/// Q10 and says nothing about Q point 2. The library keeps Q10. Figure 27 fixes
-/// which sensor a record type describes; the map below covers the sensors this
-/// library decodes.
+/// Its applicability to GIRV angular velocity is UNCONFIRMED (FW-5): §6.5.44
+/// fixes Q10 and says nothing about Q point 2. The library keeps Q10. Figure 27
+/// fixes which sensor a record type describes; the map below covers the sensors
+/// this library decodes.
 
 #include <cstddef>
 #include <cstdint>

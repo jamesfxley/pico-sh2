@@ -306,9 +306,9 @@ Result<SensorEvent> decode_gyro_integrated(
     std::span<const std::uint8_t> payload, const QOverrideTable& q_overrides) {
     // Quaternion i,j,k,real (Q14) then angular velocity x,y,z (Q10); no prefix.
     // The report has no bias or accuracy field, so applicability of metadata Q
-    // point 2 is UNCONFIRMED (1000-3625 §5.1, §6.5.44) and the angular velocity
-    // keeps the Q its report section fixes (§6.5.44); only the quaternion's Q
-    // is overridable.
+    // point 2 is UNCONFIRMED (FW-5; 1000-3625 §5.1, §6.5.44) and the angular
+    // velocity keeps the Q its report section fixes (§6.5.44); only the
+    // quaternion's Q is overridable.
     constexpr std::size_t GIRV_LENGTH = 14;
     constexpr unsigned GIRV_ANGULAR_VELOCITY_Q = 10;
     constexpr auto GIRV_ID =
