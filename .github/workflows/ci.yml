@@ -148,6 +148,8 @@
       "matrix":
         "board":
           - "pico2_w"
+          - "pico2"
+          - "pico"
     "env":
       "HOUSE_MATRIX_BOARD": "${{ matrix.board }}"
     "container":
