@@ -7,9 +7,9 @@ boundary-safety, timing, and observability requirements for the pico-sh2 SH-2 /
 SHTP protocol library. Every requirement has an ID
 (`AR`/`NR`/`SR`/`DR`/`BR`/`TR`/`OR`) and is mapped to an acceptance test in the
 traceability matrix. [architecture.md](architecture.md) describes the
-implementation, and work deliberately not built is an issue in the tracker
-(`EN-03.7`) — so this document can describe what is, rather than a mixture of
-what is and what is intended.
+implementation, and work deliberately not built is an entry in
+[future-work.md](future-work.md) (`EN-03.7`) — so this document can describe
+what is, rather than a mixture of what is and what is intended.
 
 ---
 
@@ -20,7 +20,7 @@ what is and what is intended.
 | Protocol | SH-2 sensor protocol over SHTP, as used by the CEVA/Hillcrest BNO08x (BNO085/BNO086). |
 | Platform | **Independent.** No Pico SDK, no OS. All hardware access is through `IHalTransport` (`pico_sh2/sh2/hal_transport.hpp`). The library also holds no part-specific *values*: reset and boot timing, transaction deadlines and channel numbers are supplied by the consumer or read from the hub, never compiled in. |
 | Transports | Any byte transport a host implements behind `IHalTransport`; I2C and SPI are provided by the pico-bno085 consumer, not here. |
-| Out of scope | The physical bus drivers, pin electrical handling and the interrupt latch, UART-RVC/UART-SHTP modes, and DFU/bootloader — all owned by the platform consumer. The library drives the *timing* of the reset pulse through `IHalTransport::set_reset` (SR-1), because that is protocol knowledge; which pin it is, and how it is driven, is the consumer's. |
+| Out of scope | The physical bus drivers, pin electrical handling and the interrupt latch, UART-RVC/UART-SHTP modes (FW-3), and DFU/bootloader — all owned by the platform consumer. The library drives the *timing* of the reset pulse through `IHalTransport::set_reset` (SR-1), because that is protocol knowledge; which pin it is, and how it is driven, is the consumer's. |
 
 Two named sizing profiles parameterize every static buffer (`profile.hpp`):
 
@@ -36,8 +36,8 @@ footprint gate rather than a protocol invariant, so a new member cannot grow the
 session unnoticed.
 
 **API stability:** the public API (`namespace pico_sh2`, headers under
-`pico_sh2/`) follows semantic versioning; breaking changes only at a major
-version.
+`pico_sh2/`) follows semantic versioning (`EN-06.1`): a breaking change lands at a minor version
+bump while the major version is 0, and at a major version bump from 1.0.
 
 ---
 
@@ -149,7 +149,7 @@ version.
   that application's own tag and is not applied either. A truncated TLV entry,
   an odd-length report-length array, or a GUID longer than four bytes is
   rejected as `PROTOCOL`, never read out of bounds. The four-byte GUID width is
-  this library's limit: UNCONFIRMED — 1000-3535 §5.2 does not state a GUID's
+  this library's limit: UNCONFIRMED (FW-5) — 1000-3535 §5.2 does not state a GUID's
   width, and 1000-3600 is silent.
   A cargo from the hub may hold several reports, each as long as its entry
   says (1000-3600 §2.3), and control-channel cargoes are split by the same
@@ -159,7 +159,7 @@ version.
   that faults the handshake, ends it too. A channel-0 read cargo may hold more
   than one response (1000-3535 §5.1), but neither the advertisement nor the
   Error List states its own length, so a channel-0 cargo is read as one
-  response: where a response followed by another ends is UNCONFIRMED.
+  response: where a response followed by another ends is UNCONFIRMED (FW-5).
 - **NR-5 — Reassembly completion.** A continuation-fragmented cargo is complete
   when the payload accumulated across its transfers reaches the total length
   declared by the lead (continuation-flag-clear) transfer's header — not by
@@ -224,7 +224,7 @@ version.
   read with `PROTOCOL`: only the statuses defined for a read in progress carry
   it forward. A completed read covers every word below its highest, or it ends
   with `PROTOCOL` and no words: whether the hub may answer a read non-densely is
-  UNCONFIRMED (1000-3625 §6.3.7 does not say), and a gap is what a dropped
+  UNCONFIRMED (FW-5; 1000-3625 §6.3.7 does not say), and a gap is what a dropped
   response or the tail of an earlier read of the same record leaves. The buffer
   is cleared for each read, so no word is retained from a previous one. A
   response is applied only when its FRS Type names the record being read
@@ -244,12 +244,12 @@ version.
   with the device status surfaced. Record valid (8) reports the validation and
   not the write, so the write runs on to write completed, and a held write's
   hold does not end at it. 1000-3625 §6.3.5 defines the codes without ordering
-  them; their ordering is UNCONFIRMED by the documents. The order follows CEVA's
+  them; their ordering is UNCONFIRMED (FW-5) by the documents. The order follows CEVA's
   reference host driver (`ceva-dsp/sh2`
   `b514b1e`, `sh2.c` `setFrsRx`), which waits past record valid and ends a write
   only at write completed or a failure status. That is vendor code, not a
   vendor document. Busy ends it with
-  `BUSY`; what the hub does after a busy write status is UNCONFIRMED (1000-3625
+  `BUSY`; what the hub does after a busy write status is UNCONFIRMED (FW-5; 1000-3625
   §6.3.5 lists the code only). Both carry a deadline (TR-1). The FRS sink
   receives the hub's status byte whenever the hub's own response ended the
   operation, and none when the session ended it. Every operation `frs_read()` or
@@ -274,7 +274,7 @@ version.
   clamped to zero, and one past the top of the 64-bit range to its maximum. A
   `0xFB`/`0xFA` record whose advertised length cannot carry its delta aborts the
   cargo walk and is counted (`truncated_reports`), rather than timing the events
-  after it from bytes that are not a delta. Summing the rebases is UNCONFIRMED:
+  after it from bytes that are not a delta. Summing the rebases is UNCONFIRMED (FW-5):
   1000-3625 §7.2.2 defines each Rebase Delta relative to the Base Timestamp
   Reference, which read literally replaces rather than adds; the two agree for a
   cargo with one rebase. `intn_edge_us` is the edge of the cargo's lead transfer — a
@@ -304,7 +304,7 @@ version.
   older than the Initialize phase's own timeout when the reset-complete comes,
   and no restart has come between; it still reaches the command sink as any
   unsolicited response does. Whether
-  a hub can send the two in that order is UNCONFIRMED: the manuals do not
+  a hub can send the two in that order is UNCONFIRMED (FW-5): the manuals do not
   order them, and SR-1 does not depend on it. The learned channel numbers are kept
   meanwhile (SR-10), so the Initialize response routes whether or not the
   consumer seeded the control channel. `begin()` abandons the request.
@@ -387,7 +387,7 @@ version.
 
   1000-3600 Figure 3 places `inputNormal` under tag 8, but 1000-3535 §5.2
   defines ChannelName as 9. SR-10 follows tag 9. The part's actual advertisement
-  is UNCONFIRMED until device bring-up records it.
+  is UNCONFIRMED (FW-5) until device bring-up records it.
 
 ## 5. Decoder requirements (DR)
 
@@ -407,7 +407,7 @@ version.
   2. The secondary Q scales the uncalibrated reports' bias and the rotation
   vectors' heading accuracy, and nothing else; an installed override replaces
   either. The gyro-integrated rotation vector has no bias or accuracy field, so
-  Q point 2 applicability is UNCONFIRMED; the library does not apply it to its
+  Q point 2 applicability is UNCONFIRMED (FW-5); the library does not apply it to its
   angular velocity: that stays at the Q10
   §6.5.44 fixes, and no override moves it. A Q point beyond the representable
   maximum (which would make the decoder's `2^Q` scaling undefined) is refused on
