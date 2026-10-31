@@ -68,6 +68,8 @@ inline constexpr std::uint8_t PERIODIC_DCD = 0x09;
 inline constexpr std::uint8_t OSCILLATOR_TYPE = 0x0A;
 /// Erase the dynamic calibration data and reset the hub (§6.4.9).
 inline constexpr std::uint8_t CLEAR_DCD_AND_RESET = 0x0B;
+// Simple and turntable calibration, interactive calibration and the wheel
+// request (§6.4.10, §6.4.12, §6.4.13) have no constant here (FW-1).
 }  // namespace command
 
 /// A completed command response handed to the consumer.
