@@ -70,8 +70,8 @@ exhaustively is UNCONFIRMED.
 
 ### Affected repositories
 
-pico-sh2, where the table and the golden vectors would land; pico-bno085,
-whose partner entry cites this one and where the captures come from the bench.
+pico-sh2, where the table and the golden vectors would land; pico-bno085:FW-6,
+the partner entry, where the captures come from the bench.
 
 ## FW-3 — UART-SHTP and UART-RVC transports
 
@@ -101,8 +101,8 @@ implements, and pico-bno085 implements it twice.
 
 ### Affected repositories
 
-pico-sh2, which owns the seam; pico-bno085, whose partner entry cites this one
-and which would implement it.
+pico-sh2, which owns the seam; pico-bno085:FW-5, the partner entry, which
+would implement it.
 
 ## FW-4 — Streaming reassembly
 
@@ -165,5 +165,4 @@ an observation contradicts is judged when it is changed.
 
 ### Affected repositories
 
-pico-sh2; pico-bno085, whose partner entry cites this one and where the bench
-is.
+pico-sh2; pico-bno085:FW-2, the partner entry, where the bench is.
