@@ -70,6 +70,9 @@ python3 dev.py format --check # clang-format at the pinned major version
 python3 dev.py lint           # clang-tidy over the compile database
 ```
 
+`tests/device/` checks the target consumer's session binding against the library
+and constructs a session. Its output follows the [device-test convention](infra/guides/device.md#device-tests).
+
 `-DPICO_SH2_PROFILE=large` selects the wider sizing profile, and
 `-DPICO_SH2_PROFILE_HEADER=/abs/path/profile.hpp` a profile of your own (AR-5 in
 the specification lists the knobs and their ranges); `-DPICO_SH2_SANITIZE=ON`
