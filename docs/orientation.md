@@ -85,13 +85,12 @@ in the pinned guides, starting with the
 
 ### Repo specifics
 
-- **`-Werror` sits on the target here**, unlike the SDK-linking repos in the
-  family: this project owns every source that compiles into its targets, and
-  even the cross build, where `pico_sh2_cross_probe` links against nosys alone.
-  `house_cxx_add_strict_target(... LANGUAGES CXX)` for the same reason — CXX
-  is the only language to diagnose. `project()` itself declares `C CXX ASM`,
-  which is load-bearing: `pico_family_init_sdk` brings the SDK's C and assembly
-  sources into a firmware consumer's build.
+- **`-Werror` follows source ownership.** Host builds own every source, so it
+  applies target-wide. Firmware device images compile SDK sources, so
+  `VENDOR_SOURCES` applies it per owned source, as in the SDK-linking siblings.
+  `house_cxx_add_strict_target(... LANGUAGES CXX)` diagnoses only CXX.
+  `project()` declares `C CXX ASM` because `pico_family_init_sdk` brings the
+  SDK's C and assembly sources into firmware builds.
 - **`house_cxx_enable_sanitizers` must precede `house_cxx_enable_gtest`.**
   `add_compile_options` reaches only targets created after it, so the reverse
   order leaves the fetched GoogleTest uninstrumented while this project's code

@@ -13,13 +13,10 @@ project(pico_sh2 VERSION 0.1.0 LANGUAGES C CXX ASM)
 house_cxx_common_settings(${PICO_SH2_BUILD_FIRMWARE})
 pico_family_init_sdk(${PICO_SH2_BUILD_FIRMWARE})
 
-# This project owns every source that compiles into its targets — no SDK
-# attaches its own through an INTERFACE library here, not even in the cross
-# build, where pico_sh2_cross_probe links against nosys alone. So -Werror can
-# sit on the target rather than being applied per source, with no VENDOR_SOURCES
-# keyword, and CXX is the only language to diagnose. FREESTANDING follows the
-# toolchain, which is the helper's default.
-house_cxx_add_strict_target(pico_sh2_strict LANGUAGES CXX)
+# Host sources get target-wide -Werror; firmware device images include SDK
+# sources, so firmware applies -Werror per owned source.
+house_cxx_add_strict_target(pico_sh2_strict LANGUAGES CXX
+    VENDOR_SOURCES ${PICO_SH2_BUILD_FIRMWARE})
 
 # Named sizing profile. "default" targets a single-IMU host; "large" widens the
 # reassembly buffer, TX queue, and enabled-sensor count. profile.hpp binds every
@@ -80,6 +77,10 @@ endif()
 
 if(PICO_SH2_ENABLE_FIRMWARE_PROBE)
     add_subdirectory(tests/firmware)
+endif()
+
+if(PROJECT_IS_TOP_LEVEL AND PICO_SH2_BUILD_FIRMWARE)
+    add_subdirectory(tests/device)
 endif()
 
 if(PICO_SH2_ENABLE_INSTALL)
