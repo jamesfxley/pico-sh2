@@ -5,11 +5,7 @@ pico_family_bootstrap(PICO_SH2)
 
 project(pico_sh2 VERSION 0.1.0 LANGUAGES C CXX ASM)
 
-# pico-sh2 is platform-independent: it depends on no Pico SDK and no OS. The
-# firmware flag only matters because a firmware consumer (pico-bno085) pulls
-# this project in via FetchContent; when it does, PICO_SH2_BUILD_FIRMWARE is ON
-# and the host-only testing library is skipped. Standalone, this is a pure host
-# library with a GoogleTest suite.
+# The firmware mode omits host-only testing; the library has no SDK or OS dependency.
 house_cxx_common_settings(${PICO_SH2_BUILD_FIRMWARE})
 pico_family_init_sdk(${PICO_SH2_BUILD_FIRMWARE})
 
@@ -18,33 +14,23 @@ pico_family_init_sdk(${PICO_SH2_BUILD_FIRMWARE})
 house_cxx_add_strict_target(pico_sh2_strict LANGUAGES CXX
     VENDOR_SOURCES ${PICO_SH2_BUILD_FIRMWARE})
 
-# Named sizing profile. "default" targets a single-IMU host; "large" widens the
-# reassembly buffer, TX queue, and enabled-sensor count. profile.hpp binds every
-# static size to the selected struct with static_asserts. The macro selecting it
-# is applied on the sh2 module (src/sh2/CMakeLists.txt); here only the value is
-# validated.
+# The named profile is validated here; src/sh2/CMakeLists.txt propagates its type.
 pico_family_declare_profile(PICO_SH2 NAME PROFILE
     DEFAULT default VALUES default large
     DOC "pico-sh2 sizing profile")
 
-# Host-only ASan+UBSan build. Directory-scoped, so the library, the tests and
-# the fetched GoogleTest are all instrumented: ASan's container-overflow
-# detector needs both sides of a std::string or std::vector boundary built with
-# the same instrumentation, and partial coverage is the documented cause of
-# false positives there.
+# Instrumentation precedes GoogleTest: mixed container instrumentation can
+# produce false ASan container-overflow reports.
 house_cxx_enable_sanitizers(PICO_SH2)
 
-# Every knob this build has, declared before anything is added: a subdirectory
-# reading an option that has not been declared yet reads an empty string.
+# Options precede subdirectories; an undeclared option reads as an empty string.
 house_cxx_declare_tests_option(PICO_SH2)
 
-# libFuzzer targets (Clang only), off by default; CI turns them on for the
-# fuzz job. A non-Clang host configure is a clean no-op; a configure without
-# the test tree, where the fuzz targets live, is refused.
+# Enabling fuzzers without tests fails configuration. Non-Clang hosts omit
+# fuzz targets.
 house_cxx_declare_fuzzers_option(PICO_SH2)
 
-# AR-4's cross-compiled probe, and the image the footprint gate measures. Built
-# only when cross-compiling, which is the only time the question is meaningful.
+# Cross-compiled probe measured by the footprint gate (AR-4).
 pico_family_declare_probe_option(PICO_SH2)
 
 set(PICO_SH2_INSTALL_AVAILABLE ON)
@@ -53,16 +39,11 @@ if(PICO_SH2_BUILD_FIRMWARE)
 endif()
 house_cxx_declare_install_option(PICO_SH2 AVAILABLE ${PICO_SH2_INSTALL_AVAILABLE})
 
-# When this project's targets are exported, the fetched dependency they link
-# must be in an export set too. Before the fetch below, or it is configured
-# with its default first.
+# When this project's targets are exported, the dependency must export too.
+# Set its install mode before fetching, so it sees the selected mode.
 pico_family_propagate_install(PICO_SH2 PICO_UTIL)
 
-# pico_util is the family's base layer, and this library's Result, Callback,
-# byte accessors and outbound ring are its primitives rather than second copies
-# of them. Its headers reach a consumer through this library's own, so it is a
-# PUBLIC link on the modules that include it and a DEPENDENCIES entry in the
-# installed package.
+# Public headers expose pico-util types, so installed packages depend on it too.
 pico_family_dependency(pico_util
     REPOSITORY "https://github.com/jamesfxley/pico-util.git"
     REVISION 2afe3150a52429cb61c2330041cb4ec2e26c00ef)
@@ -93,10 +74,7 @@ if(PICO_SH2_ENABLE_INSTALL)
         pico_sh2_sh2
     )
 
-    # The fake hub is host-only: it stands in for a transport an image already
-    # has, so a firmware build does not create it. Naming a target that was
-    # never created fails the configure, which is what a firmware consumer
-    # installing this package as a dependency hits.
+    # Firmware creates no fake-hub target to export.
     if(NOT PICO_SH2_BUILD_FIRMWARE)
         list(APPEND PICO_SH2_EXPORT_TARGETS pico_sh2_testing)
     endif()
