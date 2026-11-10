@@ -1,17 +1,17 @@
 # Using pico-sh2
 
-How to drive the library from a consumer. The reference for what it guarantees
-is [technical-specification.md](technical-specification.md); how it is built is
-[architecture.md](architecture.md).
+This guide explains how to drive a session. The
+[specification](technical-specification.md) defines guarantees; the
+[architecture](architecture.md) explains the implementation.
 
-If you are targeting a Raspberry Pi Pico, you probably want
-[pico-bno085](https://github.com/jamesfxley/pico-bno085) instead — it supplies
-the transports, the pins, and a driver façade over this. Read on if you are
-porting to another host or working on the protocol layer itself.
+For Raspberry Pi Pico hardware,
+[pico-bno085](https://github.com/jamesfxley/pico-bno085) supplies transports,
+pins and a driver façade. Use this guide when porting or working directly with
+the protocol layer.
 
 ## Supplying a transport
 
-Everything platform-specific goes behind `IHalTransport`:
+`IHalTransport` contains platform-specific operations:
 
 <!-- example: transport -->
 ```cpp
@@ -25,46 +25,34 @@ class MyTransport final : public pico_sh2::IHalTransport {
 };
 ```
 
-Four things about it are easy to get wrong:
+An idle read succeeds with a four-byte zeroed header. SHTP treats length zero
+as a null header with no cargo, the payload carried by SHTP transfers
+(1000-3535 §2.3.1). A read error during startup faults the session. While READY,
+it restarts the handshake; without a new advertisement, recovery then faults
+with `TIMEOUT` (SR-5). Returning an error for an idle bus therefore breaks an
+otherwise healthy session.
 
-**A read that found nothing is a success, not an error.** `service()` drains
-while `data_ready()` is true and treats a read error as the hub having gone
-away. A transport that returns an error for an idle bus faults a session
-still starting with that error; on a ready one it restarts the handshake, which
-then faults with `TIMEOUT`, because a hub that did not reset sends no new
-advertisement (SR-5). Write a zeroed header — an
-SHTP header whose length is 0 — and return its four bytes instead; the framing
-layer reads that as a null header, a transfer with no cargo (1000-3535 §2.3.1).
+The timestamp must be latched in the interrupt. SH-2 deltas are relative to the
+data-ready assertion; sampling at read time adds host scheduling delay to every
+event time. Return the edge consumed by the read. Taking the edge time and
+clearing its pending flag together keeps them tied to one assertion.
+`data_ready()` can see an asserted line before the interrupt captures its edge;
+reading the timestamp then can return the previous edge and time the cargo early
+without a diagnostic.
 
-**The timestamp must be latched in the interrupt, not sampled when the read
-runs.** SH-2 reports
-carry deltas relative to the moment the data-ready line asserted. Sampling the
-clock when the transfer runs folds the host's scheduling delay into every event
-time.
-
-**Return the edge the read consumed.** Take the edge time in the same step that
-clears the pending flag, so the two describe the same assertion. `data_ready()`
-can see the line asserted before the interrupt has latched the edge behind it,
-and a time taken then is the previous edge's: the cargo is timed early by the
-gap back to the previous assertion, and nothing counts it.
-
-**A 64-bit timestamp written by an interrupt needs publishing carefully.** On a
-32-bit core it is two stores, and a reader can land between them. pico-bno085's
-`EdgeLatch` shows one way (a seqlock); the requirement is only that a reader
-never observes half of one value and half of another.
+A 64-bit interrupt timestamp needs careful publication on a 32-bit core: a
+reader can see the value between its two stores. The reader needs a consistent
+value from one write. pico-bno085's `EdgeLatch` uses a seqlock for this.
 
 ## Bringing a session up
 
-`begin()` starts a non-blocking sequence — assert reset, wait, then the three
-announcements the hub makes on its way up — and returns immediately. Drive it
-by calling `service()`:
+`begin()` asserts reset and starts the non-blocking handshake. Drive its waits
+and three startup announcements by calling `service()`:
 
 <!-- example: session_bring_up -->
 ```cpp
-// Timing is yours to supply: how long the hub is held in reset, how long it
-// takes to boot, and how quickly it answers are properties of your part, and
-// no SH-2 or SHTP manual states them. There are no defaults, and begin()
-// faults with INVALID_ARGUMENT rather than starting on a zeroed struct.
+// Timing is part-specific; SH-2 and SHTP define no defaults.
+// Zero timing faults with INVALID_ARGUMENT.
 const pico_sh2::SessionTiming timing{
     .reset_hold_us = 2'000,
     .boot_delay_us = 100'000,
@@ -85,11 +73,9 @@ while (true) {
 }
 ```
 
-Channel numbers are not supplied: the session reads them from the hub's
-advertisement, matching each role by its advertised name (SR-10). The one
-exception is `request_reset()`, which you may want before the hub has ever
-advertised — to recover a session stuck short of `ready`. That needs a channel
-number in advance, so seed one:
+The session matches advertised channel names within their application GUIDs
+(SR-10). To recover a session stuck short of ready, `request_reset()` needs
+the device channel before the first advertisement, so seed that number:
 
 <!-- example: channel_map -->
 ```cpp
@@ -98,19 +84,17 @@ channels.seed(pico_sh2::shtp::ChannelRole::DEVICE, 1);  // your part's layout
 pico_sh2::Session session(transport, timing, channels);
 ```
 
-A seed is a starting guess, not a claim. The advertisement overrides it, so a
-wrong seed costs nothing once the hub has spoken; without one, `request_reset()`
-is refused with `NOT_READY` until it has.
+Advertisement overrides seeds. Once it arrives, a wrong seed no longer affects
+routing. Without a device seed, `request_reset()` returns `NOT_READY` until the
+channel is learned.
 
-Each phase is deadline-bounded. If one expires the session faults, and
-`fault()` plus `startup_phase()` say which deadline and which phase — enough to
-tell a hub that never came out of reset from one that came up but never
-announced itself.
+Each announcement wait has a deadline. On expiry, `fault()` reports the error
+and `startup_phase()` identifies the failed step. Reset hold and boot delay are
+timed transitions before those waits.
 
 ## Configuring sensors
 
-`set_feature` asks for a sensor at a report interval; the hub answers with what
-it granted, which may differ:
+`set_feature()` requests an interval; the hub's granted interval can differ:
 
 <!-- example: set_feature -->
 ```cpp
@@ -123,28 +107,23 @@ if (auto sent = session.set_feature(config); !sent.ok()) {
 }
 ```
 
-Every request returns a `Result`, and it is `[[nodiscard]]`: a bare
-`session.set_feature(config);` draws a warning, and fails a `-Werror` build,
-because a refused request sends nothing and the only record of it is the value
-returned.
+Requests return `[[nodiscard]]` results. Ignoring one produces a warning and
+fails a `-Werror` build. A failed request sends nothing, so its result is the
+caller's only record of the error.
 
-A non-zero report interval asks the hub to generate reports at that interval
-"or more frequently"; a sensor that cannot run that fast operates at its own
-minimum interval instead (1000-3625 §5.4.1). So treat the request as a target
-and read the Get Feature response for what you actually got.
+A non-zero interval requests that rate or faster. A sensor unable to run that
+fast uses its minimum interval (1000-3625 §5.4.1). Treat the request as a target
+and read Get Feature responses for the granted configuration.
 
-**The session keeps no record of what you asked for.** After a hub reset it
-restarts the handshake and tells you, but it does not re-send your
-configuration, because it does not know it. That is the consumer's, and
-pico-bno085's driver is one implementation of it.
+The session keeps no requested-configuration table. After reset it restarts the
+handshake and notifies the consumer, which reapplies configuration.
+pico-bno085's driver implements that recovery.
 
 ## Receiving events
 
-Events arrive at the event sink during `service()`, already decoded and
-unit-converted, with `event_us` reconstructed from the transport timestamp and
-the report's own deltas. The sample is a `std::variant`; read it by the type you
-expect, and a report of any other kind gives you null rather than the wrong
-fields:
+The event sink runs during `service()`. Events are decoded and unit-converted;
+`event_us` combines the transport timestamp with report deltas. The sample is a
+`std::variant`. `std::get_if` returns null when its type differs:
 
 <!-- example: on_event -->
 ```cpp
@@ -156,19 +135,19 @@ void on_event(void* /*ctx*/, const pico_sh2::reports::SensorEvent& event) {
 }
 ```
 
-`event.kind()` names which sample is held, for a `switch` over several.
+`event.kind()` names the held sample type for switching between alternatives.
 
-Event times are *not* strictly monotonic. The base delta and report delay are
-100 µs ticks while the edge anchoring them is microseconds, so consecutive
-events from different cargoes are built from independently quantised bases and
-can step backwards by a tick or two. Order events if you need order; do not
+Event times can move backwards. Base deltas and report delays use 100 µs ticks,
+while the edge uses microseconds. Independently quantised cargo bases can put
+consecutive events a tick or two out of order. Order events when needed; do not
 assert monotonicity.
 
 ## Transactions
 
-Commands and FRS operations are one-at-a-time and asynchronous: the call
-enqueues, `service()` sends, and the answer arrives at a sink. A second request
-while one is outstanding returns `BUSY`.
+Commands and Flash Record System (FRS) operations are asynchronous, with one
+command and one FRS operation allowed at a time. Calls enqueue requests,
+`service()` sends them, and responses reach sinks. Another request of the same
+kind returns `BUSY` while one is outstanding.
 
 <!-- example: transactions -->
 ```cpp
@@ -179,55 +158,56 @@ session.set_frs_sink(pico_sh2::Session::FrsSink(&on_frs, &ctx));
 if (!session.frs_read(0x4D4D).ok()) { /* ... */ }  // completes at the FRS sink
 ```
 
-An FRS operation the session accepted always ends at the FRS sink, exactly
-once: with the record, with the hub's error and its status byte, with `BUSY`
-and its status byte if the hub was already running another FRS operation, with
-`PROTOCOL` if the hub's answer cannot be a complete record (a word no response
-covered, or a status the manual does not define for a read), with `TIMEOUT`, or
-with `HUB_RESET` if the hub reset underneath it. A record longer than the
-profile's FRS buffer ends with `TABLE_FULL`. `begin()` is the one exception —
-it discards a running operation, since you asked for the restart.
+Each accepted FRS operation completes at its sink exactly once, except when
+`begin()` discards it for an explicit restart. Completion carries the record or
+an error:
 
-An operation the session ended itself — `TIMEOUT`, `TABLE_FULL` on a record
-still arriving, or a write it could not keep feeding — may still be running on
-the hub, which runs one FRS operation at a time. So `frs_busy()` stays true and
-a new FRS request returns `BUSY` until the hub ends it, or for at most one more
-`frs_timeout_us` (SR-3). Retry once `frs_busy()` falls. A command has no failure
-path through its sink: `command_pending()` falls when it times out or the hub
-resets, and the diagnostics hook or the reset sink says which.
+- Hub errors retain the hub's status byte, including `BUSY` when the hub was
+  already running another FRS operation.
+- `PROTOCOL` means a missing word or an undefined read status prevented a
+  complete record.
+- `TABLE_FULL` means the record exceeded the profile's FRS capacity.
+- `TIMEOUT` means its deadline expired; `HUB_RESET` means reset interrupted it.
 
-Sinks run inside `service()` and may call back into the session: queue a
-request, or call `begin()` to start over. While the FRS sink is handed a
-record's words, an `frs_read()` from it is held and sent once the sink returns,
-so the record stays intact, and an `frs_write()` from it is `BUSY`, so write
-from your own loop. If the held read then cannot be queued, it ends at the FRS
-sink with that error. A completion with no words (a write's own, a timeout, a
-failure) has nothing to protect, so a request from its sink is handled as one
-from your own loop: sent, or refused with its error — `BUSY` after an operation
-the session ended itself, and `NOT_READY` after `HUB_RESET`, since the session
-is restarting. A `begin()` from a sink ends that
-`service()` pass, and nothing more from the traffic it interrupted is
-delivered. Calling `service()` itself from a sink does nothing.
+An operation ended locally can still run on the hub: a timeout, a full read
+buffer before the final response, or a write unable to queue its next data.
+`frs_busy()` stays true and new FRS requests return `BUSY` until the hub ends
+that
+operation or one more `frs_timeout_us` expires (SR-3). Retry after it falls.
+Commands have no failure completion: `command_pending()` falls on timeout or
+reset, reported by the diagnostics or reset sink.
+
+Sinks are synchronous and may call requests or `begin()`. A diagnostics sink
+that calls `begin()` on the `STARTUP_FAULT` that `begin()` raises for invalid
+timing recurses without bound. While an
+FRS sink borrows record words, a read requested from it waits until return so
+the
+words stay valid. A write returns `BUSY`; issue it from the consumer loop.
+If the deferred read cannot then be queued, its error completes at the sink.
+
+Without borrowed words, a sink request runs normally. It succeeds or returns an
+error: `BUSY` during the hold after a locally ended operation, or `NOT_READY`
+after `HUB_RESET` while startup restarts. A sink's `begin()` ends that service
+pass and prevents further delivery from its traffic. A sink's `service()` call
+does nothing.
 
 ## Resetting
 
-Two resets, and the difference matters:
+`request_reset()` is the usual choice; clear calibration only when that is the
+aim.
 
-- `request_reset()` restarts the hub and keeps what it has learned. This is the
-  one you want.
-- `send_command(command::CLEAR_DCD_AND_RESET)` also discards the accumulated
-  dynamic calibration, which the hub then has to rebuild through motion.
+- `request_reset()` restarts the hub without clearing learned calibration.
+- `send_command(command::CLEAR_DCD_AND_RESET)` also clears dynamic calibration;
+  the hub rebuilds it through motion.
 
-Either way the hub re-announces itself and the session recognises it, so no
-special handling is needed on the consumer's side beyond re-applying
-configuration — and noticing that a pending FRS operation completed with
-`HUB_RESET` and a pending command is no longer pending.
+The hub re-announces itself and the session recognises the reset. Reapply sensor
+configuration afterwards. Pending FRS work ends with `HUB_RESET`, and a pending
+command is no longer pending.
 
 ## Reading counters
 
-`counters()` returns the whole set, and `for_each_counter` walks it without
-naming any member — which is how to report them without a list that drifts out
-of step with the library:
+`counters()` returns the set. The generated `for_each_counter` visits names and
+values together, so reporters include added counters without maintaining a list:
 
 <!-- example: counters -->
 ```cpp
@@ -237,11 +217,10 @@ pico_sh2::for_each_counter(session.counters(),
     });
 ```
 
-Each counter wraps at 2^32, so compare two readings by their difference, which
-stays right across one wrap, rather than reading a total (OR-1).
+Counters wrap at 2^32. Subtract successive readings to measure increments across
+one wrap (OR-1).
 
-`set_diag_sink` reports the events worth acting on — a startup fault, a hub
-reset, a command or FRS timeout, a write the transport refused — as they
-happen. It runs inside `service()`,
-so keep it short; log a first occurrence and count the rest rather than
-printing every one.
+`set_diag_sink()` reports startup faults, hub resets, command and FRS timeouts,
+and transport write errors. The callback runs inside `service()`, or inside
+`begin()` when invalid timing faults startup. Keep it short; log the first
+occurrence and count repeats to limit output.
