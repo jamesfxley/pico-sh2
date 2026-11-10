@@ -10,18 +10,14 @@
 namespace pico_sh2 {
 namespace {
 
-// The constructor aborts on a profile disagreement, which on a nosys target is
-// a board dead at boot with nothing said. binding_matches() is what a consumer
-// tests and logs first, so it has to agree with the constructor's own check --
-// here, in a build where the two necessarily match.
+// binding_matches() and the constructor agree for a matching build.
 TEST(Profile, BindingMatchesTheLibrarysOwnView) {
     EXPECT_TRUE(binding_matches());
     EXPECT_EQ(library_binding(), Session::caller_binding());
 }
 
-// AR-5. The concept is what a downstream profile is checked against. A struct
-// missing one knob must not satisfy it -- otherwise the failure moves back
-// inside FrsEngine, which is the diagnostic the concept exists to replace.
+// A profile missing a knob must not satisfy the concept (AR-5).
+// The failure is reported before engine instantiation.
 struct MissingFrsWords {
     static constexpr std::size_t MAX_RX_TRANSFER_LEN = 288;
     static constexpr std::size_t MAX_CARGO_LEN = 384;
@@ -32,8 +28,7 @@ struct MissingFrsWords {
     static constexpr std::size_t SESSION_SIZE_CEILING = 2304;
 };
 
-// The same near miss for the drain bound, which the session reads in
-// service() and a profile missing it would otherwise fail inside.
+// The same missing-knob check for the service drain bound.
 struct MissingTransfersPerService {
     static constexpr std::size_t MAX_RX_TRANSFER_LEN = 288;
     static constexpr std::size_t MAX_CARGO_LEN = 384;
@@ -44,8 +39,8 @@ struct MissingTransfersPerService {
     static constexpr std::size_t SESSION_SIZE_CEILING = 2304;
 };
 
-// A knob of another type, which a conversion would take in: -1 becomes the
-// largest std::size_t and passes every lower bound AR-5 sets.
+// An int knob admits -1, which converts to the largest std::size_t
+// and passes the lower bounds (AR-5).
 struct SignedFrsWords {
     static constexpr std::size_t MAX_RX_TRANSFER_LEN = 288;
     static constexpr std::size_t MAX_CARGO_LEN = 384;
@@ -57,9 +52,8 @@ struct SignedFrsWords {
     static constexpr std::size_t SESSION_SIZE_CEILING = 2304;
 };
 
-// AR-5's knob table, written out as the specification states it rather than
-// through the constants profile.hpp compares with, so a constant that drifts
-// from the table fails here. Each knob is set on its own over DefaultProfile.
+// Literal specification bounds detect drift in profile.hpp; each knob
+// is varied independently over DefaultProfile (AR-5).
 template <std::size_t V>
 struct Cargo : DefaultProfile {
     static constexpr std::size_t MAX_CARGO_LEN = V;
@@ -100,9 +94,7 @@ struct Ceiling : DefaultProfile {
     static constexpr std::size_t SESSION_SIZE_CEILING = V;
 };
 
-// AR-5: each range holds at its limit and refuses one past it, so a bound
-// deleted from ProfileBounds -- which the active profile's static_asserts read
-// -- fails here rather than letting an out-of-range profile compile.
+// Each range accepts its boundary and rejects one past it (AR-5).
 TEST(Profile, EachBoundHoldsAtItsLimitAndRefusesOnePast) {
     static_assert(ProfileBounds<Cargo<21>>::CARGO_LEN);
     static_assert(!ProfileBounds<Cargo<20>>::CARGO_LEN);
@@ -125,16 +117,14 @@ TEST(Profile, EachBoundHoldsAtItsLimitAndRefusesOnePast) {
     static_assert(!ProfileBounds<FrsWords<65536>>::FRS_WORDS_MAX);
     static_assert(ProfileBounds<Transfers<1>>::TRANSFERS_PER_SERVICE);
     static_assert(!ProfileBounds<Transfers<0>>::TRANSFERS_PER_SERVICE);
-    // The ceiling's range is the buffers, the FRS record's coverage bits
-    // included, that the same profile asks for.
+    // The minimum ceiling includes the record coverage bitmap.
     constexpr std::size_t BUFFERS = 288 + 384 + (4 * 64) + (4 * 2);
     static_assert(ProfileBounds<Ceiling<BUFFERS>>::SESSION_CEILING);
     static_assert(!ProfileBounds<Ceiling<BUFFERS - 1>>::SESSION_CEILING);
     SUCCEED();
 }
 
-// AR-5: ALL is every bound, so a bound left out of it is one the catch-all
-// assert would not hold the active profile to.
+// ALL includes every bound checked by the active profile's asserts (AR-5).
 TEST(Profile, AllIsEveryBound) {
     static_assert(ProfileBounds<DefaultProfile>::ALL);
     static_assert(ProfileBounds<LargeProfile>::ALL);
@@ -153,8 +143,7 @@ TEST(Profile, AllIsEveryBound) {
     SUCCEED();
 }
 
-// AR-5: every knob is a std::size_t, so one declared as another type is
-// refused by the concept rather than converted.
+// The concept rejects a knob whose type is not std::size_t (AR-5).
 TEST(Profile, ConceptRejectsAKnobThatIsNotASize) {
     // Reads the knobs the concept stops before, as the near misses below do.
     static_assert(SignedFrsWords::MAX_TRANSFERS_PER_SERVICE > 0);
@@ -164,9 +153,7 @@ TEST(Profile, ConceptRejectsAKnobThatIsNotASize) {
 }
 
 TEST(Profile, ConceptRejectsAProfileMissingAKnob) {
-    // Reads the knobs the concept stops before, so each struct is a near miss
-    // in exactly one respect -- its absent knob -- and not also in being
-    // unused.
+    // Accesses keep each struct a near miss only in its missing knob.
     static_assert(MissingFrsWords::MAX_TRANSFERS_PER_SERVICE > 0);
     static_assert(MissingFrsWords::SESSION_SIZE_CEILING > 0);
     static_assert(!Sh2Profile<MissingFrsWords>);
@@ -177,22 +164,15 @@ TEST(Profile, ConceptRejectsAProfileMissingAKnob) {
     SUCCEED();
 }
 
-// LargeProfile inherits from DefaultProfile, so a knob it does not override
-// must read through to the default rather than being absent. MAX_TX_CARGO is
-// the one they agree on, and it is why the inheritance is not merely tidier: a
-// knob added to DefaultProfile later reaches LargeProfile the same way.
+// LargeProfile must inherit knobs it does not override, including MAX_TX_CARGO.
 TEST(Profile, LargeInheritsTheKnobsItDoesNotChange) {
     EXPECT_EQ(LargeProfile::MAX_TX_CARGO, DefaultProfile::MAX_TX_CARGO);
     EXPECT_GT(LargeProfile::MAX_CARGO_LEN, DefaultProfile::MAX_CARGO_LEN);
     EXPECT_GT(LargeProfile::FRS_MAX_WORDS, DefaultProfile::FRS_MAX_WORDS);
 }
 
-// AR-5: the ceiling is the one knob with no protocol minimum, so it is bounded
-// by the buffers the same profile asks for --
-// MAX_RX_TRANSFER_LEN + MAX_CARGO_LEN + 4 * FRS_MAX_WORDS, plus the FRS
-// coverage bitmap's words. Below that it could
-// never be met, and the assert that fired would name Session's size rather
-// than the profile.
+// The minimum ceiling covers this profile's buffers and FRS coverage bitmap,
+// catching an impossible ceiling before the Session size assert (AR-5).
 template <typename Profile>
 constexpr std::size_t ar5_buffer_bytes() {
     return Profile::MAX_RX_TRANSFER_LEN + Profile::MAX_CARGO_LEN +

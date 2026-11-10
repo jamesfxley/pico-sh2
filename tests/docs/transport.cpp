@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT
-// The transport a consumer writes, declared as the usage guide shows it, and
-// checked to be complete: a class missing an override would be abstract, and a
-// reader could not declare one.
+// Checks that the guide's transport declares every required override.
 #include <cstddef>
 #include <cstdint>
 #include <pico_sh2/pico_sh2.hpp>

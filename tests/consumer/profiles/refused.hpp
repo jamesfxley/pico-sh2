@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
-// A profile outside AR-5's range, used by the declared consumer case
-// "refused": FRS_MAX_WORDS = 65536 is beyond the 16-bit FRS length, so the
-// build must fail on that bound's message and not for another reason.
+// FRS_MAX_WORDS = 65536 exceeds the 16-bit bound; the refused consumer case
+// must fail on that bound's message, without another failure (AR-5).
 #pragma once
 #include <cstddef>
 

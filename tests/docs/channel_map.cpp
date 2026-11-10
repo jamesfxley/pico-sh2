@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Seeding the channel map, over the transport and timing the guide has built,
-// and starting the session as the program that follows would.
+// Compiles channel seeding with the guide's transport and timing.
 #include <pico_sh2/pico_sh2.hpp>
 
 namespace doc_examples {

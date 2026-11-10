@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: MIT
-// Compiles the umbrella header as a translation unit so the full public surface
-// is exercised by the analysis toolchain, and pins the advertised version to
-// the values the build system carries.
-//
-// This file deliberately includes *only* the umbrella: it is the one place that
-// proves a consumer can drive the library from that single include, so a public
-// header dropped from it is a build failure here rather than a surprise
-// downstream. The umbrella marks its includes `IWYU pragma: export`, so a
+// Checks umbrella inclusion and compares version constants with the build.
+// Missing umbrella exports fail here rather than in downstream builds. The
+// umbrella marks its includes `IWYU pragma: export`, so a
 // symbol reached through it counts as provided here, as it does for a consumer.
 #include "pico_sh2/pico_sh2.hpp"
 
@@ -19,13 +14,9 @@
 
 namespace {
 
-// A transport that never has data and never fails: enough to construct and pump
-// a session without the testing library, which is not part of the public
-// surface.
-// final: the base declares its destructor protected and non-virtual on purpose
-// (a transport is owned by whoever supplies it, never deleted through this
-// pointer). A derived class with virtual functions and a public non-virtual
-// destructor reopens exactly that hazard unless it cannot be derived from.
+// Constructs and pumps sessions without the testing library.
+// final: the public non-virtual destructor is safe only while nothing derives
+// from this class.
 class SilentTransport final : public pico_sh2::IHalTransport {
    public:
     bool data_ready() override { return false; }
@@ -53,23 +44,18 @@ class SilentTransport final : public pico_sh2::IHalTransport {
     bool reset_asserted_ = false;
 };
 
-// The advertised version and project(pico_sh2 VERSION ...) are two records of
-// one fact, compared here against the value CMake holds rather than against a
-// literal copied out of the header -- which would only ever compare the header
-// with itself.
+// CMake supplies the independent version value, exposing header drift.
 TEST(PicoSh2, VersionMatchesTheBuildSystem) {
     EXPECT_EQ(pico_sh2::VERSION_MAJOR, PICO_SH2_CMAKE_VERSION_MAJOR);
     EXPECT_EQ(pico_sh2::VERSION_MINOR, PICO_SH2_CMAKE_VERSION_MINOR);
     EXPECT_EQ(pico_sh2::VERSION_PATCH, PICO_SH2_CMAKE_VERSION_PATCH);
 }
 
-// The umbrella alone must be enough to build and drive a session: construct it,
-// start it, pump it, and reach the public request surface and counters.
+// The umbrella must expose session construction, startup, requests and
+// counters.
 TEST(PicoSh2, UmbrellaHeaderAloneCanDriveASession) {
     SilentTransport transport;
-    // Timing is the consumer's to supply: the library ships no defaults,
-    // because a reset hold and a boot delay describe a part rather than the
-    // protocol. These stand in for a datasheet's numbers.
+    // Host timing follows tests/sh2/session_fixture.hpp.
     constexpr std::uint64_t RESET_HOLD_US = 2'000;
     const pico_sh2::SessionTiming timing{
         .reset_hold_us = RESET_HOLD_US,
@@ -92,7 +78,7 @@ TEST(PicoSh2, UmbrellaHeaderAloneCanDriveASession) {
     session.service();
     EXPECT_FALSE(transport.reset_asserted());
 
-    // Requests are reachable and correctly refused before the handshake ends.
+    // Requests return NOT_READY before the handshake completes.
     EXPECT_EQ(session.set_feature(pico_sh2::FeatureConfig{}).error(),
               pico_sh2::Sh2Error::NOT_READY);
     EXPECT_EQ(session.send_command(pico_sh2::command::COUNTER).error(),
@@ -112,9 +98,7 @@ TEST(PicoSh2, UmbrellaHeaderAloneCanDriveASession) {
     EXPECT_TRUE(
         session.set_report_q(0x05, pico_sh2::reports::ReportQ{14, 12}).ok());
 
-    // The headers a consumer reaches for a field of every decoded event, a
-    // flush and the channel binding: each one the umbrella must export, so
-    // the include check fails here if one is dropped from it.
+    // The umbrella must also export event fields, flush and channel binding.
     EXPECT_NE(pico_sh2::reports::SensorAccuracy::HIGH,
               pico_sh2::reports::SensorAccuracy::LOW);
     EXPECT_EQ(pico_sh2::FLUSH_COMPLETED_REPORT, 0xEF);

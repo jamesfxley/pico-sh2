@@ -13,9 +13,8 @@
 namespace pico_sh2::reports {
 namespace {
 
-// Build a metadata-record word span whose word 7 packs the two Q points as the
-// SH-2 Reference Manual §5.1 (Figures 28/29) lays them out: Q point 1 in the
-// low half, Q point 2 in the high half.
+// Metadata word 7 packs Q point 1 low and Q point 2 high
+// (1000-3625 §5.1, Figures 28/29).
 std::array<std::uint32_t, 9> record_with_q(std::uint16_t q1, std::uint16_t q2) {
     std::array<std::uint32_t, 9> words{};
     words[METADATA_Q_WORD] = (static_cast<std::uint32_t>(q2) << 16U) |

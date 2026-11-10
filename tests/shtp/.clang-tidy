@@ -1,7 +1,4 @@
-# Test-tree overrides layered on tests/.clang-tidy, the library-owned test overlay, which is what disables readability-magic-numbers here.
-# Nothing under tests/ inherits src/.clang-tidy: they are siblings. Only the rules this
-# particular tree needs are listed: a rule disabled where it fires nowhere is
-# unaccountable coverage loss for every file added later.
+# Inherits tests/.clang-tidy, including its readability-magic-numbers override.
 InheritParentConfig: true
 
 Checks: >

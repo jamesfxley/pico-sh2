@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
-// AR-1: no heap allocation on the steady-state path. This suite owns the
-// global operator new override the check needs, so it lives alone in its own
-// translation unit — defining operator new in more than one of the linked test
-// objects would be a duplicate definition.
+// No allocation after begin(). Only this translation unit defines the global
+// operator new override; a second definition among the linked suites would be
+// a duplicate (AR-1).
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -16,9 +15,8 @@
 #include "pico_sh2/testing/frame_builder.hpp"
 #include "session_fixture.hpp"
 
-// Detect AddressSanitizer: it installs its own operator new/delete, so the
-// AR-1 allocation-counting override below is compiled only for the plain build.
-// Under ASan the same invariant is still guarded by leak/use-after-free checks.
+// ASan supplies operator new/delete, so allocation counting runs only
+// in the plain build; sanitiser checks do not establish zero allocation (AR-1).
 #if defined(__SANITIZE_ADDRESS__)
 #define PICO_SH2_TEST_ASAN
 #elif defined(__has_feature)
@@ -27,16 +25,14 @@
 #endif
 #endif
 
-// The override is the only user of these two headers, so they are included only
-// where it is compiled.
+// Only the allocation-counting override uses these headers.
 #ifndef PICO_SH2_TEST_ASAN
 #include <cstdlib>
 #include <new>
 #endif
 
-// Allocation counter for the AR-1 (zero post-init heap) test. The overridden
-// global operator new only tallies while armed, so it never perturbs the rest
-// of the suite. Defined at global scope as operator new must be.
+// The counter tallies only while armed (AR-1). It is at file scope so the
+// global operator new below can reach it.
 namespace ar1 {
 namespace {
 std::size_t alloc_count = 0;
@@ -45,8 +41,7 @@ bool counting = false;
 }  // namespace ar1
 
 #ifdef PICO_SH2_TEST_ASAN
-// The tests below still compile under ASan, so the code they exercise is
-// analysed in every tree; they stop at their first line instead of counting.
+// Allocation-counting tests compile under ASan but skip before exercising code.
 constexpr bool COUNTING_AVAILABLE = false;
 #else
 constexpr bool COUNTING_AVAILABLE = true;
@@ -119,10 +114,6 @@ void operator delete[](void* memory, [[maybe_unused]] std::size_t size,
 
 namespace {
 
-// Named one at a time rather than with a using-directive: this suite
-// reaches for a handful of helpers, and a budget line it does not need
-// is budget spent for nothing. Each is named in the namespace that
-// defines it.
 using pico_sh2::sh2_test::drive_to_ready;
 using pico_sh2::sh2_test::make_session;
 using pico_sh2::testing::FakeHub;
@@ -130,7 +121,8 @@ using pico_sh2::testing::frame;
 
 using pico_sh2::Session;
 
-// AR-1: the counter must observe a deliberate non-elidable allocation.
+// The counter must detect a non-elidable allocation as a negative control
+// (AR-1).
 TEST(Session, AllocationCounterIsLive) {
     if (!COUNTING_AVAILABLE) {
         GTEST_SKIP() << "allocation counter is unavailable under ASan";
@@ -154,8 +146,8 @@ TEST(Session, NoHeapAllocationAfterBegin) {
     // allocate inside the armed region.
     drive_to_ready(hub, session);
 
-    // Queue a batch of input cargoes. These allocations happen before the
-    // counter is armed; the measured region only drains and decodes them.
+    // The fake allocates while queuing; only draining and decoding are
+    // measured.
     std::vector<std::uint8_t> payload = {0xFB, 0x0A, 0x00, 0x00, 0x00,
                                          0x01, 0x00, 0x00, 0x05, 0x00,
                                          0x01, 0x00, 0x02, 0x00, 0xFF};
@@ -172,11 +164,8 @@ TEST(Session, NoHeapAllocationAfterBegin) {
     EXPECT_EQ(session.counters().events_decoded, 32U);
 }
 
-// AR-1: the control path is steady state too. Each reply a ready session
-// handles -- a Get Feature response, a command response, an FRS read
-// response and a Flush Completed -- is drained with the counter armed. The
-// requests go out before arming: the fake hub records writes in a vector,
-// which is the test's allocation, not the session's.
+// Control replies are drained with the counter armed (AR-1).
+// Requests are sent before arming because FakeHub records writes in a vector.
 TEST(Session, NoHeapAllocationHandlingControlReplies) {
     if (!COUNTING_AVAILABLE) {
         GTEST_SKIP() << "allocation-counting override is disabled under ASan; "
@@ -215,9 +204,8 @@ TEST(Session, NoHeapAllocationHandlingControlReplies) {
     EXPECT_EQ(session.counters().flushes_completed, 1U);
 }
 
-// OR-2: reporting a diagnostic event allocates nothing, whether the hook is
-// unset or bound. A command timeout is the event: it is raised inside the
-// armed region, once with no hook and once with a hook that tallies it.
+// A command timeout allocates nothing with the hook unset or bound;
+// it fires inside the armed region in both cases (OR-2).
 struct DiagTally {
     std::size_t timeouts = 0;
 

@@ -1,13 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// Shared setup for the session suites: the captures the sinks deliver into and
-// the two helpers that drive a session to a known point.
-//
-// The session tests are split by area (startup, reset recovery, input, control
-// transactions, FRS, heap), and every one of them needs to get a session to
-// READY first. Keeping that in one place means a change to the handshake is a
-// change to one function rather than to six suites.
+// Shared sink captures and startup helpers for the session suites.
 
 #include <gtest/gtest.h>
 
@@ -31,10 +25,11 @@
 
 namespace pico_sh2::sh2_test {
 
-// Only what this header's own body uses. The rest of pico_sh2::testing is
-// named directly by the suite that wants it, so a helper moving out of that
-// namespace is a compile error where it is used rather than a silent
-// re-resolution through a re-export here.
+// This header imports only helpers it uses. Suites name the rest in their
+// defining namespace so a moved helper fails to compile instead of resolving
+// through a re-export here.
+// Using-declarations avoid google-build-using-namespace suppressions against
+// the C++ suppression ceiling in docs/deviation-budget.txt.
 using pico_sh2::testing::FakeHub;
 using pico_sh2::testing::seeded_channels;
 
@@ -90,10 +85,8 @@ struct FrsCapture {
     }
 };
 
-// Timing for the host suites. The library ships no defaults — a reset hold and
-// a boot delay are properties of a part, not of the protocol — so every test
-// supplies its own. These only have to be non-zero and consistent with how the
-// helpers below advance time.
+// Non-zero host timings match the helpers' time advances; part-specific timing
+// is described in docs/usage-guide.md, Bringing a session up.
 inline constexpr std::uint64_t TEST_RESET_HOLD_US = 2'000;
 inline constexpr std::uint64_t TEST_BOOT_DELAY_US = 100'000;
 inline constexpr std::uint64_t TEST_PHASE_TIMEOUT_US = 200'000;
@@ -111,14 +104,12 @@ constexpr SessionTiming test_timing() {
     };
 }
 
-// A session wired to `hub` with the test timing and a channel map seeded for a
-// hub advertising at the default base, which is what a consumer supplies.
+// A session with host timing and channels seeded at the supplied base.
 inline Session make_session(FakeHub& hub, std::uint8_t base = 1) {
     return {hub, test_timing(), seeded_channels(base)};
 }
 
-// Drive the timed reset/boot transitions so the session is waiting for the
-// advertisement.
+// Advance through reset and boot to WAIT_ADVERTISEMENT.
 inline void advance_to_wait_advertisement(FakeHub& hub, Session& session) {
     session.begin();
     EXPECT_EQ(session.startup_phase(), StartupPhase::RESET_ASSERTED);
@@ -130,7 +121,7 @@ inline void advance_to_wait_advertisement(FakeHub& hub, Session& session) {
     EXPECT_EQ(session.startup_phase(), StartupPhase::WAIT_ADVERTISEMENT);
 }
 
-// Complete the full startup handshake so the session is READY.
+// Complete startup to READY.
 inline void drive_to_ready(FakeHub& hub, Session& session) {
     advance_to_wait_advertisement(hub, session);
     hub.queue_startup();
@@ -155,8 +146,7 @@ inline std::vector<Visited> visit_all(const SessionCounters& counters) {
     return seen;
 }
 
-// Names of the counters whose value differs between two snapshots, sorted so a
-// case can compare against a literal set.
+// Sorted names of counters that differ between snapshots.
 inline std::vector<std::string> moved(const SessionCounters& before,
                                       const SessionCounters& after) {
     const std::vector<Visited> was = visit_all(before);

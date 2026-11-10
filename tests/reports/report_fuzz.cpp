@@ -8,22 +8,11 @@
 #include "pico_sh2/reports/report_length_table.hpp"
 #include "pico_sh2/reports/sensor_event.hpp"
 
-// libFuzzer entry point for the report decoders and the input-cargo walk. Built
-// only when PICO_SH2_ENABLE_FUZZERS is set and the compiler supports
-// -fsanitize=fuzzer (Clang). The always-on golden-vector tests pin the
-// contract; this target explores it against arbitrary cargo bytes.
-//
-// For any byte sequence the decoders and the walk must terminate and never read
-// outside the supplied span (ASan/UBSan guard this). The walk splits reports by
-// the length table, so a fuzz cargo exercises unknown IDs, truncated tails, and
-// concatenation. The compact gyro-integrated report (no prefix) is exercised
-// separately from the same bytes.
-//
-// The hub supplies the length table too, through its advertisement, so a
-// second walk runs under a table whose entries the input sets: a length a
-// record cannot hold, or zero, must be refused by the walk rather than read.
+// Arbitrary reports must terminate without out-of-bounds reads (ASan/UBSan).
+// Zero or undersized input-supplied lengths must be rejected before reading
+// the record.
 
-// The entry point's name is libFuzzer's, not ours.
+// readability-identifier-naming: libFuzzer requires this entry point name.
 // NOLINTNEXTLINE(readability-identifier-naming)
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
                                       std::size_t size) {
@@ -48,8 +37,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
         input, pico_sh2::reports::ReportLengthTable::seeded(),
         pico_sh2::reports::QOverrideTable{}, edge, sink, stats);
 
-    // Leading (report ID, length) pairs override the seed, as an advertisement
-    // would; the rest of the input is the cargo walked under them.
+    // Leading ID/length pairs set the table; the remaining bytes are the cargo.
     constexpr std::size_t ADVERTISED_PAIRS = 4;
     constexpr std::size_t PAIR_BYTES = 2 * ADVERTISED_PAIRS;
     if (size > PAIR_BYTES) {
@@ -64,8 +52,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
             pico_sh2::reports::QOverrideTable{}, edge, sink, stats);
     }
 
-    // A single-report decode and the prefix-less gyro-integrated decode over
-    // the same bytes; both must bounds-check the span internally.
+    // Single-report and gyro-integrated decodes must both bounds-check these
+    // bytes internally; the gyro-integrated format has no report prefix.
     (void)pico_sh2::reports::decode_report(input);
     (void)pico_sh2::reports::decode_gyro_integrated(input);
     return 0;

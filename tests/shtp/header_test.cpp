@@ -51,13 +51,13 @@ TEST(ShtpHeader, DecodesContinuationFlag) {
     EXPECT_EQ(header.value().cargo_length(), 1U);
 }
 
-// NR-1: 0xFFFF is the reserved dead-bus signature and is never parsed.
+// Reserved length 0xFFFF is rejected (NR-1).
 TEST(ShtpHeader, RejectsReservedLength) {
     constexpr std::array<std::uint8_t, 4> RAW{0xFF, 0xFF, 0x02, 0x00};
     EXPECT_EQ(parse_header(RAW).error(), Sh2Error::BAD_HEADER);
 }
 
-// NR-1: a transfer shorter than the 4-byte minimum is rejected.
+// Transfers shorter than four bytes are rejected (NR-1).
 TEST(ShtpHeader, RejectsShortBuffer) {
     constexpr std::array<std::uint8_t, 3> RAW{0x04, 0x00, 0x02};
     EXPECT_EQ(parse_header(RAW).error(), Sh2Error::BAD_HEADER);
@@ -71,12 +71,9 @@ TEST(ShtpHeader, EmptyTransferIsIdle) {
     EXPECT_EQ(header.value().cargo_length(), 0U);
 }
 
-// NR-1: a nonzero length field below the header size it must count.
+// A nonzero length must count at least the header bytes (NR-1).
 TEST(ShtpHeader, RejectsNonzeroLengthBelowHeaderSize) {
-    // The length field counts the 4 header bytes (1000-3535 §2.2.1); a nonzero
-    // length below HEADER_SIZE claims a transfer shorter than its own header
-    // and is rejected. Only length 0 (null header) is a valid sub-header
-    // length.
+    // Below the header size, only length zero is valid (1000-3535 §2.2.1).
     for (const std::uint8_t len :
          {std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{3}}) {
         const std::array<std::uint8_t, 4> raw{len, 0x00, 0x02, 0x00};
@@ -102,9 +99,8 @@ TEST(ShtpHeader, SerializeAddsHeaderToCargoLength) {
     EXPECT_FALSE(round.value().continuation);
 }
 
-// The length field is 15 bits and counts the header too, so the largest cargo
-// is 0x7FFF - 4 = 0x7FFB. Both sides of that edge: one cargo past it would set
-// the continuation bit if the check were made against 0x8000.
+// serialize_header accepts at most 0x7FFB cargo bytes (length 0x7FFF);
+// 1000-3535 §2.2.1 gives the largest cargo as 32766 minus the header.
 TEST(ShtpHeader, SerializeRejectsOverlongCargo) {
     std::array<std::uint8_t, 4> out{};
     EXPECT_TRUE(serialize_header(out, 2, SequenceNumber{0}, 0x7FFB).ok());

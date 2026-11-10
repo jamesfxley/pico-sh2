@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
-// NR-6. The framing and decoder layers each have their own target; this one
-// drives the state machine that composes them, where a hang is reachable that
-// neither layer alone can produce.
+// Fuzzes termination and memory safety of the composed session state machine
+// (NR-6).
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -19,29 +18,20 @@
 #include "pico_sh2/testing/frame_builder.hpp"
 #include "pico_sh2/util/result.hpp"
 
-// libFuzzer entry point for the full SH-2 session driven over a fuzz-backed
-// HAL. Built only when PICO_SH2_ENABLE_FUZZERS is set and the compiler supports
-// -fsanitize=fuzzer (Clang). The always-on session_test pins the behavior; this
-// target drives begin()/service() against arbitrary hub traffic and clock
-// advances, and must never read outside a buffer or fail to terminate
-// (ASan/UBSan guard this).
+// Arbitrary hub transfers driven with a ticking clock must terminate without
+// out-of-bounds access (checked by ASan/UBSan).
 
 namespace {
 
-// A HAL whose inbound transfers and clock come from the fuzz input. Each
-// read_transfer consumes a length byte followed by that many payload bytes;
-// each service tick advances the clock so the startup timers fire.
-// final: the base declares its destructor protected and non-virtual on purpose
-// (a transport is owned by whoever supplies it, never deleted through this
-// pointer). A derived class with virtual functions and a public non-virtual
-// destructor reopens exactly that hazard unless it cannot be derived from.
+// Reads length-prefixed fuzz transfers; each pump tick advances the clock.
+// final: the public non-virtual destructor is safe only while nothing derives
+// from this class.
 class FuzzHal final : public pico_sh2::IHalTransport {
    public:
     FuzzHal(const std::uint8_t* data, std::size_t size)
         : data_(data), size_(size) {}
 
-    /// Serve `prelude` ahead of the fuzz data once the hub would have booted,
-    /// so an input can start from a ready session.
+    /// Supply startup before fuzz data so an input can reach READY.
     void set_prelude(std::vector<std::vector<std::uint8_t>> prelude) {
         prelude_ = std::move(prelude);
     }
@@ -52,8 +42,8 @@ class FuzzHal final : public pico_sh2::IHalTransport {
 
     void advance() { now_ += CLOCK_STEP_US; }
 
-    // With a prelude, the fuzz data waits behind it: offered earlier it would
-    // be drained and dropped while the session boots.
+    // With a prelude, fuzz data waits until boot completes to avoid being
+    // dropped.
     bool data_ready() override {
         if (prelude_pos_ < prelude_.size()) {
             return prelude_pending();
@@ -95,8 +85,8 @@ class FuzzHal final : public pico_sh2::IHalTransport {
 
    private:
     static constexpr std::uint64_t CLOCK_STEP_US = 30'000;
-    // Past the reset hold and boot interval below, so the prelude is not
-    // drained and dropped while the session is still booting.
+    // Later than reset hold and boot, keeping startup data out of the boot
+    // drain.
     static constexpr std::uint64_t PRELUDE_AFTER_US = 150'000;
 
     [[nodiscard]] bool prelude_pending() const {
@@ -113,14 +103,12 @@ class FuzzHal final : public pico_sh2::IHalTransport {
 
 }  // namespace
 
-// The entry point's name is libFuzzer's, not ours.
+// readability-identifier-naming: libFuzzer requires this entry point name.
 // NOLINTNEXTLINE(readability-identifier-naming)
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
                                       std::size_t size) {
-    // The first byte's low bit chooses whether a valid startup precedes the
-    // fuzz data. Without it every input would have to find an advertisement,
-    // a reset-complete and an Initialize before reaching the transaction
-    // engines; with it the fuzz data lands on a ready session.
+    // The low bit of the first byte selects valid startup before fuzz data,
+    // allowing transaction coverage without finding all three announcements.
     if (size == 0) {
         return 0;
     }
@@ -134,8 +122,7 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
              pico_sh2::testing::frame(
                  2, 0, pico_sh2::testing::initialize_response(0))});
     }
-    // Timing has no defaults; the fuzzer supplies its own, as a consumer must.
-    // A seeded map lets the pre-advertisement paths be reached.
+    // A consumer must supply timing; seeds also expose pre-advertisement paths.
     constexpr pico_sh2::SessionTiming TIMING{
         .reset_hold_us = 2'000,
         .boot_delay_us = 100'000,
@@ -154,12 +141,9 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
     pico_sh2::Session session(hal, TIMING, channels);
     session.begin();
 
-    // Bounded pump: drain fuzz-driven transfers and advance the clock so timed
-    // transitions and deadlines fire. On a fault, restart the handshake to keep
-    // exercising the startup path against the remaining input.
-    // Once ready, keep a command and an FRS operation outstanding, alternating
-    // read and write, so fuzzed control traffic reaches the transaction
-    // engines -- the FRS read places words at a hub-supplied offset.
+    // Pumping advances the clock so deadlines fire; faults restart startup.
+    // Commands and alternating FRS reads and writes exercise the transaction
+    // engines, including hub-supplied FRS word offsets.
     static constexpr std::array<std::uint32_t, 3> RECORD{1, 2, 3};
     unsigned frs_operations = 0;
     for (int i = 0; i < 512; ++i) {

@@ -35,8 +35,7 @@ TEST(ReportLengthTable, UnknownIdIsUnsupported) {
     EXPECT_EQ(TABLE.length_of(0x77).error(), Sh2Error::UNSUPPORTED);
 }
 
-// A report ID and its length are both a byte; a call that passes them the
-// wrong way round must not compile.
+// Swapping the byte-sized report ID and length must not compile.
 template <typename Id, typename Length>
 concept SetsLengthWith = requires(ReportLengthTable table, Id id,
                                   Length length) { table.set(id, length); };

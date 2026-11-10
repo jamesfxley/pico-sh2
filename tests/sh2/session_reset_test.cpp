@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Session tests: recognising a hub that reset underneath the session and
-// re-running the handshake without losing or stranding state (SR-5).
+// Hub reset recovery and the state it preserves or ends (SR-5).
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -24,10 +23,6 @@
 
 namespace {
 
-// Named one at a time rather than with a using-directive: this suite
-// reaches for a handful of helpers, and a budget line it does not need
-// is budget spent for nothing. Each is named in the namespace that
-// defines it.
 using pico_sh2::sh2_test::advance_to_wait_advertisement;
 using pico_sh2::sh2_test::CommandCapture;
 using pico_sh2::sh2_test::drive_to_ready;
@@ -77,11 +72,8 @@ TEST(Session, UnexpectedAdvertisementRestartsHandshake) {
     EXPECT_EQ(session.state(), SessionState::READY);
 }
 
-// SR-5, NR-4: byte 0 of a channel-0 read cargo is the SHTP response code
-// (1000-3535 §5.1). Only Response 0 is an advertisement. The hub sends
-// Response 1, its Error List, on its own whenever it meets a recoverable SHTP
-// error (§5.1.2.1); that is a report, not a re-advertisement, so a ready
-// session stays ready.
+// An Error List leaves a ready session ready; only Response 0
+// is an advertisement (1000-3535 §5.1, §5.1.2.1; SR-5, NR-4).
 TEST(Session, AnErrorListWhileReadyIsNotAReset) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -91,7 +83,7 @@ TEST(Session, AnErrorListWhileReadyIsNotAReset) {
             &observer));
     drive_to_ready(hub, session);
 
-    // Error 9: host wrote to an unrecognized channel.
+    // Error 9: host wrote to an unrecognised channel.
     hub.queue_transfer(frame(0, 1, {0x01, 0x09}), 0);
     session.service();
     EXPECT_TRUE(session.ready());
@@ -100,10 +92,8 @@ TEST(Session, AnErrorListWhileReadyIsNotAReset) {
     EXPECT_EQ(session.counters().protocol_errors, 0U);
 }
 
-// NR-4: the advertisement is the body after the response byte. This one
-// parses only with the byte removed -- read from byte 0, the 0x00 is a tag
-// whose one-byte value swallows the GUID tag, and 0x02 then claims 0x81 bytes
-// the cargo does not hold.
+// Parsing starts after the response byte (NR-4). From byte 0, the parser
+// consumes the GUID tag as a value, then expects 0x81 bytes this fixture lacks.
 TEST(Session, AnAdvertisementIsReadAfterItsResponseByte) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -116,8 +106,7 @@ TEST(Session, AnAdvertisementIsReadAfterItsResponseByte) {
     EXPECT_EQ(session.counters().protocol_errors, 0U);
 }
 
-// NR-4, SR-5: a Response 0 with no body is not an advertisement, and a ready
-// session is not reset by one.
+// Response 0 without a body does not reset a ready session (NR-4, SR-5).
 TEST(Session, ABodilessResponseZeroWhileReadyIsNotAReset) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -130,8 +119,8 @@ TEST(Session, ABodilessResponseZeroWhileReadyIsNotAReset) {
     EXPECT_EQ(session.counters().protocol_errors, 1U);
 }
 
-// Responses 2-255 are reserved (1000-3535 §5.1.3): a protocol error, not a
-// reset.
+// Reserved responses 2-255 are protocol errors, without a reset
+// (1000-3535 §5.1.3).
 TEST(Session, AReservedChannelZeroResponseIsAProtocolError) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -161,9 +150,8 @@ TEST(Session, BusFaultDuringDrainDoesNotDoubleFault) {
     FakeHub hub;
     Session session = make_session(hub);
     advance_to_wait_advertisement(hub, session);
-    // A read fails mid-drain: the session faults with the bus error and records
-    // the faulting phase. A coincidentally-elapsed phase deadline must not
-    // re-fault it as a startup timeout (which would overwrite fault()).
+    // A phase deadline must not overwrite the read error that faulted
+    // the session in this drain pass.
     hub.queue_transfer(frame(0, 0, advertisement()), 0);
     hub.fail_next_read(Sh2Error::BUS_ERROR);
     hub.advance_time(10'000'000);  // push well past the advertisement deadline
@@ -181,10 +169,8 @@ TEST(Session, TransportErrorWhileReadyRestartsTheHandshake) {
     session.set_reset_sink(pico_sh2::Session::ResetSink::bind<
                            ResetObserver, &ResetObserver::on_reset>(&observer));
     drive_to_ready(hub, session);
-    // A read the hub does not answer while READY is the hub leaving the bus,
-    // which is how a reset presents on a transport that can report one at all
-    // (SR-5). The handshake restarts and the consumer is notified; the session
-    // does not fault.
+    // A read error while READY restarts the handshake and notifies
+    // the consumer without faulting (SR-5).
     hub.queue_transfer(frame(3, 0, {}), 0);
     hub.fail_next_read(Sh2Error::BUS_ERROR);
     session.service();
@@ -202,10 +188,8 @@ TEST(Session, TransportErrorWhileReadyRestartsTheHandshake) {
     EXPECT_EQ(session.state(), SessionState::READY);
 }
 
-// OR-1: the counters mirrored from the framing engine are published on every
-// service() pass, including one that stopped draining early on a transport
-// error. Cargoes delivered before the error must not go unreported until some
-// later clean pass.
+// Earlier cargoes must not wait for a clean pass to be counted, even when
+// a transport error ends the pass (OR-1).
 TEST(Session, MirroredCountersSurviveATransportError) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -218,9 +202,7 @@ TEST(Session, MirroredCountersSurviveATransportError) {
     hub.fail_read_after(1, Sh2Error::BUS_ERROR);
     session.service();
 
-    // The whole moved set, so the same pass moving an unrelated counter fails:
-    // the cargo, which no handler takes while READY, and the restart, which
-    // `resets` counts and `transport_restarts` breaks down.
+    // Only cargoes_in, resets, transport_restarts and unrouted_cargoes move.
     EXPECT_EQ(
         moved(before, session.counters()),
         (std::vector<std::string>{"cargoes_in", "resets", "transport_restarts",
@@ -229,16 +211,13 @@ TEST(Session, MirroredCountersSurviveATransportError) {
     EXPECT_EQ(session.counters().transport_restarts, 1U);
 }
 
-// OR-1: only constructing a new session clears its counters. begin() restarts
-// the hub, not the record of what the session has seen. No transfer is read
-// during the reset hold and boot, so nothing should have moved.
+// begin() preserves counters; only construction clears them (OR-1).
+// No transfer is read during reset hold and boot, so nothing should move.
 TEST(Session, CountersSurviveBegin) {
     FakeHub hub;
     Session session = make_session(hub);
     drive_to_ready(hub, session);
-    // Counters at zero would survive a begin() that zeroed them, so the two
-    // timeout counters are moved first: a command and an FRS read, each left
-    // to expire.
+    // Both timeout counters are made non-zero so clearing them is observable.
     ASSERT_TRUE(session.send_command(pico_sh2::command::COUNTER).ok());
     ASSERT_TRUE(session.frs_read(pico_sh2::frs_type::SYSTEM_ORIENTATION).ok());
     hub.advance_time(pico_sh2::sh2_test::TEST_TRANSACTION_TIMEOUT_US + 1);
@@ -253,10 +232,8 @@ TEST(Session, CountersSurviveBegin) {
         });
     ASSERT_GT(session.counters().cargoes_in, 0U);
 
-    // The engine's counts reach counters() only from a pass that drains, and
-    // the reset and boot passes do not, so one runs past them before the
-    // comparison: a begin() that reset the engine would show there, not
-    // straight after the call.
+    // A draining pass precedes comparison: reset and boot passes
+    // do not mirror the engine counts, so an engine reset is hidden until then.
     advance_to_wait_advertisement(hub, session);
     session.service();
 
@@ -273,10 +250,8 @@ TEST(Session, TransportThatNeverReturnsTimesOutInsteadOfRestartingForever) {
     FakeHub hub;
     Session session = make_session(hub);
     drive_to_ready(hub, session);
-    // A transport that is dead rather than resetting never re-advertises, so
-    // the restart above resolves to the advertisement deadline: a TIMEOUT
-    // attributed to WAIT_ADVERTISEMENT rather than the bus error that is only
-    // the symptom (SR-5).
+    // Without re-advertisement, recovery ends TIMEOUT in WAIT_ADVERTISEMENT
+    // rather than retaining the original bus error (SR-5).
     hub.queue_transfer(frame(3, 0, {}), 0);
     hub.fail_next_read(Sh2Error::BUS_ERROR);
     session.service();
@@ -291,23 +266,19 @@ TEST(Session, TransportThatNeverReturnsTimesOutInsteadOfRestartingForever) {
     EXPECT_EQ(session.counters().transport_restarts, 1U);
 }
 
-// AR-3: a single service() call drains a bounded number of transfers, so a HAL
-// reporting data_ready() indefinitely cannot spin the drain loop.
+// A service() pass drains at most the profile's transfer bound (AR-3).
 TEST(Session, DrainIsBoundedPerServiceCall) {
     FakeHub hub;
     Session session = make_session(hub);
     advance_to_wait_advertisement(hub, session);
-    // Flood the hub with empty idle transfers. A single service() drains a
-    // bounded number of them and always terminates (no unbounded loop, even if
-    // a HAL reported data_ready() indefinitely).
+    // More idle transfers than one pass can drain.
     constexpr std::size_t FLOOD = 500;
     for (std::size_t i = 0; i < FLOOD; ++i) {
         hub.queue_transfer(frame(0, static_cast<std::uint8_t>(i), {}), 0);
     }
     session.service();
-    // AR-3: the cap is the profile's, so the assertion is against the knob and
-    // not against the flood size. "fewer than 500" passes at 499 and says
-    // nothing about the bound the requirement states.
+    // Comparing with the profile bound catches an overlong pass; the flood size
+    // would accept a pass leaving just one transfer (AR-3).
     EXPECT_LE(session.counters().protocol_errors,
               pico_sh2::ActiveProfile::MAX_TRANSFERS_PER_SERVICE);
     std::uint32_t guard = 0;
@@ -328,8 +299,7 @@ TEST(Session, BeginDropsCargoesQueuedBeforeIt) {
         session.get_feature(pico_sh2::reports::SensorId::ACCELEROMETER).ok());
     const std::size_t writes_before = hub.writes().size();
 
-    // Restarting from scratch must discard it rather than flush it at the new
-    // hub the moment the handshake completes.
+    // Restarting must discard the staged request before the new handshake.
     session.begin();
     drive_to_ready(hub, session);
     session.service();
@@ -365,9 +335,7 @@ TEST(Session, BeginClearsAnInProgressFrsOperation) {
     EXPECT_TRUE(session.frs_read(0x2D3E).ok());
 }
 
-// SR-5: a hub reset in the middle of a command must free the command slot. The
-// hub restarting has abandoned the request, so waiting for its response would
-// hold the slot until the deadline for no reason.
+// A hub reset must free the command slot (SR-5).
 TEST(Session, HubResetClearsAnOutstandingCommand) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -395,10 +363,8 @@ TEST(Session, HubResetClearsAnInProgressFrsOperation) {
     EXPECT_FALSE(session.frs_busy());
 }
 
-// SR-5: a re-advertisement that turns out to be malformed still means the hub
-// reset. The session must not keep claiming to be READY over a report-length
-// table that has already been dropped back to the seed — it has to wait for a
-// clean advertisement.
+// Even a malformed re-advertisement starts recovery. The session must not
+// remain READY after dropping learned lengths back to the seed (SR-5).
 TEST(Session, MalformedReadvertisementLeavesTheSessionWaiting) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -426,9 +392,9 @@ TEST(Session, MalformedReadvertisementLeavesTheSessionWaiting) {
     EXPECT_EQ(session.state(), SessionState::READY);
 }
 
-// --- host-requested reset (1000-3600 §2.2) ----------------------------------
+// Host-requested reset (1000-3600 §2.2).
 
-// SR-7: request_reset() writes the one-byte reset on the executable channel.
+// request_reset() sends one byte on the device channel (SR-7).
 TEST(Session, RequestResetWritesTheExecutableCommand) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -445,10 +411,7 @@ TEST(Session, RequestResetWritesTheExecutableCommand) {
     EXPECT_EQ(frame[pico_sh2::shtp::HEADER_SIZE], 0x01);
 }
 
-// SR-7: unlike the control-channel requests, a reset does not require `ready`.
-// The device channel's number comes from the consumer's seed, which is the
-// whole reason a seed exists: it is what keeps a session stuck short of the
-// handshake recoverable.
+// A seeded device channel allows reset before ready (SR-7).
 TEST(Session, RequestResetDoesNotNeedReady) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -456,9 +419,8 @@ TEST(Session, RequestResetDoesNotNeedReady) {
 
     ASSERT_TRUE(session.request_reset().ok());
 
-    // Accepting the request is not the requirement: SR-7 is a way *out* of a
-    // session stuck short of ready, so the cargo has to reach the hub from a
-    // service() pass that never enters the READY branch.
+    // The reset has to reach the HAL from a pass that never enters READY;
+    // accepting it alone does not demonstrate recovery (SR-7).
     session.service();
 
     ASSERT_FALSE(hub.writes().empty());
@@ -468,9 +430,8 @@ TEST(Session, RequestResetDoesNotNeedReady) {
     EXPECT_EQ(frame[pico_sh2::shtp::HEADER_SIZE], 0x01);
 }
 
-// Without a seed there is no device channel until the hub advertises one, so
-// the request is refused rather than sent to a guessed number. This is the cost
-// of the library holding no channel numbers of its own.
+// Without a seed or advertisement, reset returns NOT_READY
+// (docs/usage-guide.md, Bringing a session up).
 TEST(Session, RequestResetBeforeAnyAdvertisementNeedsASeed) {
     FakeHub hub;
     Session session(hub, test_timing());  // no seeded channel map
@@ -485,8 +446,8 @@ TEST(Session, RequestResetBeforeAnyAdvertisementNeedsASeed) {
     EXPECT_TRUE(session.request_reset().ok());
 }
 
-// A seed is a starting guess, not a claim: the advertisement decides. A session
-// seeded for one base must still follow a hub that advertises another.
+// The session must use the advertised device channel even when seeded
+// otherwise.
 TEST(Session, AnAdvertisementOverridesAWrongSeed) {
     constexpr std::uint8_t ACTUAL = 10;
     FakeHub hub;
@@ -509,12 +470,9 @@ TEST(Session, AnAdvertisementOverridesAWrongSeed) {
     EXPECT_EQ(hub.writes().back().frame[2], device_channel(ACTUAL));
 }
 
-// The hub answers by restarting and re-announcing itself, which is the same
-// path an unexpected reset takes (SR-5).
-// SR-7: the hub's re-announcement after a requested reset is recognised by the
-// SR-5 recovery path, so recovery needs nothing further.
-// SR-5: a reset-complete with no advertisement before it, arriving while the
-// session is ready, is a hub reset as surely as an advertisement is.
+// A reset-complete while ready starts recovery without an advertisement (SR-5),
+// including after a requested reset (SR-5, SR-7), with no consumer action
+// (SR-5).
 TEST(Session, AResetCompleteWhileReadyIsAHubReset) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -530,14 +488,13 @@ TEST(Session, AResetCompleteWhileReadyIsAHubReset) {
     EXPECT_EQ(session.counters().resets, 1U);
     EXPECT_FALSE(session.ready());
     EXPECT_EQ(session.counters().unrouted_cargoes, 0U);
-    // The advertisement that should have preceded it was missed, so the
-    // session waits for one and asks the hub for it.
+    // The advertisement that should precede reset-complete was missed;
+    // recovery waits for one and requests it.
     EXPECT_EQ(session.startup_phase(), StartupPhase::WAIT_ADVERTISEMENT);
 }
 
-// SR-5: the advertisement a reset-complete arrived without is requested --
-// SHTP Command 0 with P0 = 1, the whole hub's advertisement (1000-3535
-// §5.1.1) -- on the command channel.
+// Recovery requests the whole advertisement with SHTP Command 0, P0 = 1
+// on channel 0 (1000-3535 §5.1.1; SR-5).
 TEST(Session, AResetCompleteWithoutAnAdvertisementRequestsOne) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -556,9 +513,8 @@ TEST(Session, AResetCompleteWithoutAnAdvertisementRequestsOne) {
     EXPECT_EQ(sent[5], 0x01U);  // P0: the entire hub
 }
 
-// SR-5: the announcements that follow a missed advertisement are held until
-// the requested one arrives, so recovery completes without the hub announcing
-// itself twice.
+// Held announcements complete recovery when the requested advertisement
+// arrives, without a second announcement (SR-5).
 TEST(Session, RecoveryFromAMissedAdvertisementCompletesOnTheRequestedOne) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -577,9 +533,8 @@ TEST(Session, RecoveryFromAMissedAdvertisementCompletesOnTheRequestedOne) {
     EXPECT_EQ(session.counters().unrouted_cargoes, 0U);
 }
 
-// SR-5: begin() while a requested advertisement is outstanding starts over,
-// so the next startup holds nothing for it: an Initialize response ahead of
-// the advertisement is out of order again.
+// begin() abandons a requested advertisement and held announcements;
+// an Initialize before the next advertisement is out of order (SR-5).
 TEST(Session, BeginAbandonsARequestedAdvertisement) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -595,10 +550,8 @@ TEST(Session, BeginAbandonsARequestedAdvertisement) {
     EXPECT_EQ(session.counters().unrouted_cargoes, unrouted + 1);
 }
 
-// SR-5: the same recovery for a consumer that seeded nothing, whose map knows
-// the control channel only from the advertisement before the reset. The
-// reset-complete arrived on the learned device channel, so the hub's numbering
-// is unchanged and the learned map still routes the Initialize response.
+// Recovery without seeds keeps the learned map long enough to route
+// Initialize after reset-complete (SR-5).
 TEST(Session, RecoveryFromAMissedAdvertisementNeedsNoSeededControlChannel) {
     FakeHub hub;
     Session session{hub, test_timing()};
@@ -616,10 +569,8 @@ TEST(Session, RecoveryFromAMissedAdvertisementNeedsNoSeededControlChannel) {
     EXPECT_EQ(session.counters().unrouted_cargoes, 0U);
 }
 
-// SR-5: every other restart forgets what the last advertisement taught, since
-// a hub that reset may come back numbered differently (1000-3600 §2.3). With
-// nothing seeded, a transport-error restart leaves no device channel to send a
-// reset on until the hub advertises again.
+// A transport-error restart forgets learned numbers, leaving an unseeded
+// device channel unbound until re-advertisement (1000-3600 §2.3; SR-5).
 TEST(Session, ATransportRestartForgetsTheLearnedChannelNumbers) {
     FakeHub hub;
     Session session{hub, test_timing()};
@@ -637,8 +588,8 @@ TEST(Session, ATransportRestartForgetsTheLearnedChannelNumbers) {
     EXPECT_EQ(session.request_reset().error(), Sh2Error::NOT_READY);
 }
 
-// SR-5: the numbers kept through that recovery are the previous
-// advertisement's, and the requested advertisement still replaces them.
+// The requested advertisement replaces the temporarily kept channel numbers
+// (SR-5).
 TEST(Session, TheRequestedAdvertisementReplacesTheKeptChannelNumbers) {
     constexpr std::uint8_t MOVED = 10;
     FakeHub hub;
@@ -661,8 +612,8 @@ TEST(Session, TheRequestedAdvertisementReplacesTheKeptChannelNumbers) {
     EXPECT_EQ(hub.writes().back().frame[2], device_channel(MOVED));
 }
 
-// SR-5: where the Initialize response has not arrived by the time the
-// requested advertisement does, the session waits for it and nothing else.
+// Recovery still waits for Initialize if it follows the requested advertisement
+// (SR-5).
 TEST(Session, RecoveryFromAMissedAdvertisementStillWaitsForInitialize) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -679,11 +630,8 @@ TEST(Session, RecoveryFromAMissedAdvertisementStillWaitsForInitialize) {
     EXPECT_TRUE(session.ready());
 }
 
-// SR-1, SR-5: recovery from a missed advertisement does not depend on which of
-// the two announcements arrives first. An Initialize response that comes ahead
-// of the reset-complete, while the session is still READY, is remembered, and
-// the handshake the reset-complete restarts takes it rather than waiting for
-// one that has already gone by.
+// Recovery accepts either announcement order, remembering an Initialize
+// received while READY before reset-complete (SR-1, SR-5).
 TEST(Session, RecoveryTakesAnInitializeThatArrivedBeforeTheResetComplete) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -697,8 +645,7 @@ TEST(Session, RecoveryTakesAnInitializeThatArrivedBeforeTheResetComplete) {
     EXPECT_TRUE(session.ready());
 }
 
-// SR-5: a remembered Initialize that reported failure faults the handshake it
-// is taken into, as one arriving in the usual order does.
+// A remembered failed Initialize faults the recovery that takes it (SR-5).
 TEST(Session, ARememberedFailedInitializeFaults) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -711,9 +658,8 @@ TEST(Session, ARememberedFailedInitializeFaults) {
     EXPECT_EQ(session.fault(), pico_sh2::Sh2Error::PROTOCOL);
 }
 
-// SR-5: the remembered Initialize belongs to the reset that follows it, and to
-// no later one: a restart for any other reason forgets it, so a second reset
-// inside the window waits for its own Initialize rather than reusing the first.
+// An intervening restart forgets a remembered Initialize, so a second reset
+// waits for its own (SR-5).
 TEST(Session, ARestartForgetsAnInitializeItDidNotTake) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -739,9 +685,7 @@ TEST(Session, ARestartForgetsAnInitializeItDidNotTake) {
     EXPECT_EQ(session.startup_phase(), StartupPhase::WAIT_INITIALIZE);
 }
 
-// SR-5: the remembered Initialize belongs to the reset only while it is recent:
-// one older than the Initialize phase's own timeout is not taken, and the
-// handshake waits for a fresh one as it always has.
+// An Initialize older than its phase timeout is not reused for recovery (SR-5).
 TEST(Session, AnInitializeTooOldForTheResetIsNotTaken) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -757,8 +701,7 @@ TEST(Session, AnInitializeTooOldForTheResetIsNotTaken) {
     EXPECT_EQ(session.startup_phase(), StartupPhase::WAIT_INITIALIZE);
 }
 
-// SR-5: begin() is a restart too, so it forgets a remembered Initialize; the
-// reset that follows a fresh handshake waits for its own.
+// begin() forgets a remembered Initialize (SR-5).
 TEST(Session, BeginForgetsARememberedInitialize) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -775,8 +718,7 @@ TEST(Session, BeginForgetsARememberedInitialize) {
     EXPECT_EQ(session.startup_phase(), StartupPhase::WAIT_INITIALIZE);
 }
 
-// SR-5: an Initialize remembered for a reset is still an unsolicited response,
-// and reaches the command sink as one.
+// A remembered Initialize still reaches the command sink as unsolicited (SR-5).
 TEST(Session, ARememberedInitializeStillReachesTheCommandSink) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -816,8 +758,7 @@ TEST(Session, TheHubsAnswerToARequestedResetIsRecognised) {
     EXPECT_TRUE(session.ready());
 }
 
-// SR-3, SR-5: an FRS operation a hub reset cuts off still ends exactly once,
-// through the FRS sink, so a consumer waiting on it is not stranded.
+// Reset ends an FRS operation exactly once through its sink (SR-3, SR-5).
 TEST(Session, HubResetEndsAnInProgressFrsOperationThroughItsSink) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -857,9 +798,8 @@ struct Restarter {
     }
 };
 
-// begin() from the reset sink starts a clean run: the hub is held in reset for
-// the hold interval, released, and the handshake completes. The advertisement
-// that announced the reset is not carried into the new run.
+// begin() from the reset sink holds reset for the full interval and completes
+// a fresh handshake, discarding the advertisement that triggered recovery.
 TEST(Session, BeginFromTheResetSinkRestartsCleanly) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -882,8 +822,7 @@ TEST(Session, BeginFromTheResetSinkRestartsCleanly) {
     EXPECT_EQ(session.state(), SessionState::READY);
 }
 
-// begin() from the event sink ends the cargo being walked: its remaining
-// reports belong to the hub incarnation the call restarted.
+// begin() from the event sink ends delivery from the current cargo.
 TEST(Session, BeginFromTheEventSinkDropsTheRestOfTheCargo) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -917,9 +856,8 @@ struct Pumper {
     }
 };
 
-// service() from a sink returns at once. Draining again from inside the walk
-// would deliver the next cargo's events ahead of this one's remainder, from a
-// staging buffer the outer pass is still reading.
+// service() from a sink does nothing, preserving the staging buffer (AR-3).
+// Draining here would deliver the next cargo before this one's last events.
 TEST(Session, ServiceFromASinkIsANoOp) {
     FakeHub hub;
     Session session = make_session(hub);

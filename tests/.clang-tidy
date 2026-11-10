@@ -1,15 +1,9 @@
-# Library-owned test-tree overrides layered on the root .clang-tidy.
-#
-# Each rule below is a standing deviation registered in the library's
-# docs/deviations.md, one row per directory this file takes effect in. The name
-# must be the canonical check, never an alias: the root config disables aliases
-# in favour of their canonical spelling, so an alias here suppresses nothing while
-# reading as if it does.
+# Test overrides registered in docs/deviations.md, one row per affected directory.
+# Check names must be canonical: root aliases are disabled and suppress nothing.
 InheritParentConfig: true
 
 Checks: >
   -readability-magic-numbers
 
-# Literal sizes, offsets, counts and timestamps in a test are the case under
-# test, not a value shared with production code; hoisting each to a named
-# constant moves the expected value away from the assertion that reads it.
+# readability-magic-numbers: literal sizes, offsets, counts and timestamps
+# define test cases; named constants would separate expectations from assertions.

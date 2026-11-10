@@ -9,31 +9,19 @@
 #include "pico_sh2/shtp/channels.hpp"
 #include "pico_sh2/shtp/engine.hpp"
 
-// libFuzzer entry point for the SHTP framing engine. Built only when
-// PICO_SH2_ENABLE_FUZZERS is set and the compiler supports -fsanitize=fuzzer
-// (Clang). The always-on engine tests pin the contract in CI; this target
-// explores it continuously against arbitrary hub byte streams.
-//
-// The engine must, for any byte sequence: terminate, never read outside a
-// transfer or write past the reassembly buffer (ASan/UBSan guard this), and
-// never deliver a cargo larger than the buffer it was given. The fuzzer feeds
-// the input as a sequence of transfers whose physical size is data-derived, so
-// it exercises both single-transfer cargoes and fragmentation (a transfer
-// shorter than the cargo its header claims).
+// Arbitrary transfers must terminate without out-of-bounds reads or writes
+// (ASan/UBSan) and never deliver cargo beyond buffer capacity.
+// Unconstrained fragment splits must produce no crash or hang (NR-5).
 
-// NR-5: reassembly holds across arbitrary fragment boundaries — the fuzzer
-// drives the framing engine with unconstrained transfer splits and must find no
-// crash or hang.
-//
-// The entry point's name is libFuzzer's, not ours.
+// readability-identifier-naming: libFuzzer requires this entry point name.
 // NOLINTNEXTLINE(readability-identifier-naming)
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
                                       std::size_t size) {
     std::array<std::uint8_t, 512> buffer{};
     pico_sh2::shtp::ShtpEngine engine(buffer);
 
-    // Touch every delivered byte so a bad span is caught by the sanitizer, and
-    // trap if a cargo ever exceeds the reassembly buffer.
+    // Reading every delivered byte exposes bad spans to the sanitiser;
+    // the capacity check traps oversized delivery.
     static std::uint64_t sink_sum = 0;
     engine.set_cargo_sink(pico_sh2::shtp::ShtpEngine::CargoSink(
         [](void* ctx, const pico_sh2::shtp::ShtpEngine::Cargo& cargo) {
@@ -51,8 +39,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
     const std::span<const std::uint8_t> input(data, size);
     std::size_t offset = 0;
     while (offset + pico_sh2::shtp::HEADER_SIZE <= input.size()) {
-        // Physical transfer size is derived from the stream, independent of the
-        // header's length field, so fragments and mismatches both occur.
+        // Physical size varies independently of the header, exercising
+        // mismatches.
         std::size_t chunk = pico_sh2::shtp::HEADER_SIZE + (input[offset] % 33U);
         chunk = std::min(chunk, input.size() - offset);
         (void)engine.ingest(input.subspan(offset, chunk), offset);
@@ -65,13 +53,11 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data,
         const std::size_t payload_len = data[0] % out.size();
         const std::span<const std::uint8_t> payload(
             data, payload_len <= size ? payload_len : size);
-        // A channel is a wire number; which one does not matter to framing,
-        // so drive it from the input too.
+        // Framing accepts any wire channel, so the input supplies it too.
         (void)engine.frame_outbound(data[0], payload, out);
     }
 
-    // The same bytes as an advertisement: the TLV walk must stay inside the
-    // cargo, and every name it hands out must lie inside it too.
+    // Advertisement parsing must stay inside the cargo; emitted names must too.
     static std::uint64_t advertised_sum = 0;
     const auto lengths = pico_sh2::shtp::ReportLengthSink(
         [](void* ctx, std::uint8_t report_id, std::uint8_t length) {

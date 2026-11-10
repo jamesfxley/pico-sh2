@@ -22,7 +22,9 @@ using pico_sh2::ActiveProfile;
 using pico_sh2::Sh2Error;
 using pico_sh2::detail::TxPath;
 
-// AR-3: a one-buffer duplex HAL cannot accept another write until RX drains.
+// Models a HAL that returns BUSY on writes while input is pending (AR-3).
+// final: the public non-virtual destructor is safe only while nothing derives
+// from this class.
 class DuplexHub final : public pico_sh2::IHalTransport {
    public:
     bool data_ready() override { return hub_.data_ready(); }
@@ -77,17 +79,13 @@ TEST(TxPath, YieldsForDuplexInputBeforeWritingAgain) {
     EXPECT_EQ(hub.writes().at(1).frame.at(3), 1);
 }
 
-// BR-2: the outbound queue refuses rather than dropping, so the caller sees the
-// failure. Held here because the queue is a TxPath member since the ring moved
-// to pico_util::RingBuffer -- pico-util owns the container's own behaviour, and
-// what is this library's is the policy around it.
+// A full queue returns QUEUE_FULL without staging the payload (BR-2).
 
 TEST(TxPath, StagesUpToTheProfileDepthThenRefuses) {
     TxPath path;
     const std::array<std::uint8_t, 1> payload{0x11};
 
-    // The depth is the element count outright: the ring counts rather than
-    // reserving a slot to tell full from empty.
+    // All slots count; none is reserved to distinguish full from empty.
     for (std::size_t i = 0; i < ActiveProfile::TX_QUEUE_DEPTH; ++i) {
         EXPECT_TRUE(path.enqueue(0, payload).ok())
             << "cargo " << i << " of " << ActiveProfile::TX_QUEUE_DEPTH;
@@ -106,7 +104,7 @@ TEST(TxPath, APayloadLargerThanASlotIsRefused) {
     const auto refused = path.enqueue(0, too_big);
     EXPECT_FALSE(refused.ok());
     EXPECT_EQ(refused.error(), Sh2Error::QUEUE_FULL);
-    // Refused, not partially staged.
+    // An enqueue error stages no partial payload.
     EXPECT_TRUE(path.empty());
 }
 
@@ -128,7 +126,7 @@ TEST(TxPath, ResetDropsEverythingStaged) {
     path.reset();
 
     EXPECT_TRUE(path.empty());
-    // Room again, so reset released the slots rather than only hiding them.
+    // Enqueue succeeds again, proving reset released the slots.
     for (std::size_t i = 0; i < ActiveProfile::TX_QUEUE_DEPTH; ++i) {
         EXPECT_TRUE(path.enqueue(0, payload).ok());
     }
