@@ -2,21 +2,7 @@
 #pragma once
 
 /// \file metadata_q.hpp
-/// Sensor-metadata FRS record -> decode-time Q override (DR-2). A part
-/// publishes authoritative Q points for each sensor in a sensor-metadata FRS
-/// record (0xE301-0xE325; 1000-3625 §5.1). A record is an array of
-/// 32-bit words whose word 7 packs the two Q points (Figures 28/29):
-///
-///   bits 15:0  = Q point 1 (signed), the data fields -> ReportQ::primary
-///   bits 31:16 = Q point 2 (signed), bias/accuracy   -> ReportQ::secondary
-///
-/// The record header (words 0..8) is identical for record revisions 3 and 4, so
-/// word 7 is read the same way regardless of the revision in word 3. Q point 2
-/// applies to bias/accuracy unless otherwise noted (1000-3625 §5.1).
-/// Its applicability to GIRV angular velocity is UNCONFIRMED (FW-5): §6.5.44
-/// fixes Q10 and says nothing about Q point 2. The library keeps Q10. Figure 27
-/// fixes which sensor a record type describes; the map below covers the sensors
-/// this library decodes.
+/// Sensor-metadata Flash Record System (FRS) Q-point overrides (DR-2).
 
 #include <cstddef>
 #include <cstdint>
@@ -29,20 +15,14 @@
 
 namespace pico_sh2::reports {
 
-/// Word index in a sensor-metadata record that packs Q point 1 (low half) and
-/// Q point 2 (high half). 1000-3625 §5.1, Figures 28/29.
+/// Metadata word index for Q point 1 low, Q point 2 high (1000-3625 §5.1).
 inline constexpr std::size_t METADATA_Q_WORD = 7;
 
-/// Q points a sensor-metadata record carries are signed 16-bit fields; for the
-/// in-scope sensors they lie in [0, MAX_Q_POINT] (fractional scaling; ReportQ
-/// stores an unsigned exponent). A word 7 whose signed halves fall outside this
-/// range is treated as malformed rather than installed.
+/// Largest accepted signed metadata Q exponent.
 inline constexpr std::int16_t METADATA_Q_MAX =
     static_cast<std::int16_t>(MAX_Q_POINT);
 
-/// Extract the primary/secondary Q points from a sensor-metadata record's
-/// words. Returns nullopt if the record is too short to reach word 7, or either
-/// Q point is out of the representable range.
+/// Read Q points; nullopt means a short record or invalid exponent.
 inline std::optional<ReportQ> metadata_record_q(
     std::span<const std::uint32_t> words) {
     if (words.size() <= METADATA_Q_WORD) {
@@ -58,9 +38,7 @@ inline std::optional<ReportQ> metadata_record_q(
                    .secondary = static_cast<std::uint8_t>(q2)};
 }
 
-/// The input-report ID whose Q points a sensor-metadata record type carries
-/// (SH-2 Reference Manual Figure 27), restricted to the sensors this library
-/// decodes. Returns nullopt for a record type outside that set.
+/// Decoded report ID for a metadata type, or nullopt (1000-3625 Figure 27).
 inline std::optional<std::uint8_t> report_id_for_metadata_type(
     std::uint16_t record_type) {
     switch (record_type) {

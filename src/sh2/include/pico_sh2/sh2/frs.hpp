@@ -2,12 +2,9 @@
 #pragma once
 
 /// \file frs.hpp
-/// FRS (Flash Record System) read and write reports (SH-2 Reference Manual
-/// §6.3.3-6.3.7). FRS records hold persistent configuration and calibration
-/// (e.g. system orientation, sensor metadata, DCD). Only one FRS operation may
-/// be in progress at a time. A read streams 0xF3 responses (up to two 32-bit
-/// words each) until the record is complete; a write is a 0xF7 request followed
-/// by 0xF6 data reports paced by each 0xF5 status response.
+/// Flash Record System (FRS) read/write reports for configuration and
+/// calibration records (1000-3625 §6.3.3–6.3.7). Only one operation may run at
+/// a time.
 
 #include <cstddef>
 #include <cstdint>
@@ -43,39 +40,35 @@ inline constexpr std::size_t FRS_WRITE_RESPONSE_SIZE = 4;
 /// Words carried per FRS read response / write data report.
 inline constexpr std::size_t FRS_WORDS_PER_REPORT = 2;
 
-/// Byte offset of the packed length/status nibbles in an FRS Read Response
-/// (0xF3, §6.3.7): the status in bits 3:0, and the number of data words this
-/// report carries in bits 7:4.
+/// Byte offset of packed status (bits 3:0) and word count (7:4) (§6.3.7).
 inline constexpr std::size_t FRS_READ_RESP_LENGTH_STATUS = 1;
 /// Byte offset of the u16le word offset within an FRS Read Response.
 inline constexpr std::size_t FRS_READ_RESP_WORD_OFFSET = 2;
 /// Byte offset of the first u32le data word within an FRS Read Response.
 inline constexpr std::size_t FRS_READ_RESP_DATA = 4;
-/// Byte offset of the u16le FRS type within an FRS Read Response: the record
-/// the carried words belong to (1000-3625 §6.3.7, Figure 39).
+/// Byte offset of the record type (1000-3625 §6.3.7, Figure 39).
 inline constexpr std::size_t FRS_READ_RESP_TYPE = 12;
 /// Mask selecting the status nibble of FRS_READ_RESP_LENGTH_STATUS.
 inline constexpr std::uint8_t FRS_READ_STATUS_MASK = 0x0F;
-/// Right shift bringing the data-word-count nibble of
-/// FRS_READ_RESP_LENGTH_STATUS into the low bits.
+/// Right shift from the word-count nibble of FRS_READ_RESP_LENGTH_STATUS to
+/// the low bits.
 inline constexpr unsigned FRS_READ_DATA_LEN_SHIFT = 4;
 
 /// Byte offset of the status in an FRS Write Response (0xF5, §6.3.5).
 inline constexpr std::size_t FRS_WRITE_RESP_STATUS = 1;
 
-/// FRS read-response status (byte 1, bits 3:0). §6.3.7. Statuses 4, 6 and 7 are
-/// deprecated and 9-15 reserved, so the reader recognizes only the values
-/// below.
+/// Read status in byte 1, bits 3:0; other codes are deprecated or reserved
+/// (§6.3.7).
 namespace frs_read_status {
 /// The report carries record data and the read continues.
 inline constexpr std::uint8_t NO_ERROR = 0;
-/// The requested record type is not one the hub recognizes.
+/// The requested record type is not one the hub recognises.
 inline constexpr std::uint8_t UNRECOGNIZED_TYPE = 1;
 /// Another FRS operation is in progress; that one runs to completion.
 inline constexpr std::uint8_t BUSY = 2;
 /// The record has been returned in full; this is the last response.
 inline constexpr std::uint8_t RECORD_COMPLETED = 3;
-/// The record type is recognized but holds no data.
+/// The record type is recognised but holds no data.
 inline constexpr std::uint8_t RECORD_EMPTY = 5;
 /// The DFU flash memory device is unavailable.
 inline constexpr std::uint8_t DEVICE_ERROR = 8;
@@ -85,7 +78,7 @@ inline constexpr std::uint8_t DEVICE_ERROR = 8;
 namespace frs_write_status {
 /// The words in the last data report were accepted; send the next.
 inline constexpr std::uint8_t WORDS_RECEIVED = 0;
-/// The requested record type is not one the hub recognizes.
+/// The requested record type is not one the hub recognises.
 inline constexpr std::uint8_t UNRECOGNIZED_TYPE = 1;
 /// Another FRS operation is in progress.
 inline constexpr std::uint8_t BUSY = 2;
@@ -120,20 +113,14 @@ inline constexpr std::uint16_t GYRO_INTEGRATED_RV_CONFIG = 0xA1A2;
 inline constexpr std::uint16_t DYNAMIC_CALIBRATION = 0x1F1F;
 }  // namespace frs_type
 
-/// The record a write opens: its type, and its length in 32-bit words (0
-/// erases the record).
-///
-/// A struct rather than two adjacent u16 parameters. The wire order is
-/// length-then-type, the reverse of how the pair reads, so a caller working
-/// from the layout in §6.3.3 would naturally pass them the wrong way round --
-/// and the hub answers a swap with UNRECOGNIZED_TYPE, which reads as a part
-/// that lacks the record rather than as a caller bug.
+/// Record type and length in 32-bit words; zero erases it.
+/// Named fields prevent swapping the wire's length-then-type pair.
 struct FrsWriteRequest {
     std::uint16_t type;          ///< FRS record type (see frs_type).
     std::uint16_t length_words;  ///< Record length in words; 0 erases it.
 };
 
-/// Serialize an FRS Read Request (0xF4) for `type` into `out`. Read offset and
+/// Serialise an FRS Read Request (0xF4) for `type` into `out`. Read offset and
 /// block size are left zero: the whole record from the start.
 constexpr std::size_t serialize_frs_read_request(
     std::uint16_t type, std::span<std::uint8_t, FRS_READ_REQUEST_SIZE> out) {
@@ -145,7 +132,7 @@ constexpr std::size_t serialize_frs_read_request(
     return FRS_READ_REQUEST_SIZE;
 }
 
-/// Serialize an FRS Write Request (0xF7) opening `request` into `out`.
+/// Serialise an FRS Write Request (0xF7) opening `request` into `out`.
 constexpr std::size_t serialize_frs_write_request(
     FrsWriteRequest request,
     std::span<std::uint8_t, FRS_WRITE_REQUEST_SIZE> out) {
@@ -156,10 +143,8 @@ constexpr std::size_t serialize_frs_write_request(
     return FRS_WRITE_REQUEST_SIZE;
 }
 
-/// Serialize an FRS Write Data report (0xF6): `words` at `offset_words` into
-/// `out`. The words are a span rather than two u32 parameters, which would be
-/// adjacent, same-typed and silently swappable -- a swap writes a structurally
-/// valid record with every chunk internally reversed, and the hub persists it.
+/// Serialise two words at offset_words; the span prevents swapping adjacent
+/// words.
 constexpr std::size_t serialize_frs_write_data(
     std::uint16_t offset_words,
     std::span<const std::uint32_t, FRS_WORDS_PER_REPORT> words,

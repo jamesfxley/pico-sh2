@@ -2,12 +2,8 @@
 #pragma once
 
 /// \file feature.hpp
-/// Set/Get Feature reports (SH-2 Reference Manual §6.5.2-6.5.5). A
-/// FeatureConfig is the host's desired configuration for one sensor and,
-/// symmetrically, the hub's granted configuration reported back in a Get
-/// Feature Response; the two share the on-wire feature-report layout. Report
-/// and batch intervals are in microseconds; a report interval of 0 disables the
-/// sensor.
+/// Set/Get Feature reports (1000-3625 §6.5.2–6.5.5).
+/// Intervals are microseconds; a zero report interval disables the sensor.
 
 #include <cstddef>
 #include <cstdint>
@@ -40,8 +36,7 @@ inline constexpr std::uint8_t GET_FEATURE_RESPONSE = 0xFC;
 /// The feature report body is a fixed 17 bytes: report ID + 16 payload bytes.
 inline constexpr std::size_t FEATURE_REPORT_SIZE = 17;
 
-/// One sensor's configuration, in both directions: the host's request and the
-/// hub's grant share the on-wire feature-report layout.
+/// Requested or granted sensor configuration, sharing one wire layout.
 struct FeatureConfig {
     /// The sensor this configures.
     reports::SensorId sensor{};
@@ -58,8 +53,7 @@ struct FeatureConfig {
     std::uint32_t sensor_specific = 0;
 };
 
-/// Serialize `config` as a Set Feature (0xFD) command into `out`. Returns the
-/// number of bytes written.
+/// Serialise Set Feature and return the byte count.
 constexpr std::size_t serialize_set_feature(
     const FeatureConfig& config,
     std::span<std::uint8_t, FEATURE_REPORT_SIZE> out) {
@@ -73,9 +67,7 @@ constexpr std::size_t serialize_set_feature(
     return FEATURE_REPORT_SIZE;
 }
 
-/// Parse a Get Feature Response (0xFC) body into a FeatureConfig. The caller
-/// has already checked report[0] == GET_FEATURE_RESPONSE; the extent is the
-/// length check, so a short report cannot reach here.
+/// Parse Get Feature; the caller has already matched GET_FEATURE_RESPONSE.
 constexpr FeatureConfig parse_feature_response(
     std::span<const std::uint8_t, FEATURE_REPORT_SIZE> report) {
     FeatureConfig config;

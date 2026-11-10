@@ -2,23 +2,9 @@
 #pragma once
 
 /// \file sensor_event.hpp
-/// Decoded, unit-converted sensor event. Each in-scope report ID decodes to a
-/// SensorEvent: a common header (which sensor, its per-sensor sequence,
-/// accuracy, and the raw report delay) plus the sample, a variant whose
-/// alternative is the event's kind(). Fixed-point wire fields are converted by
-/// the report's Q point (SH-2 Reference Manual, section 6.5) before they reach
-/// this type.
-///
-/// Read a sample through the variant, never by assuming its kind:
-///
-///     if (const auto* rotation = std::get_if<RotationSample>(&event.payload))
-///     {
-///         use(rotation->unit);
-///     }
-///
-/// Every alternative is trivially copyable, so SensorEvent is too: it is
-/// produced on the stack by the decoder and handed to the sink by value, never
-/// heap-allocated.
+/// Typed events with fixed-point fields converted to engineering units
+/// (1000-3625 §6.5). The sample variant and kind() identify its type; events
+/// are trivially copyable.
 
 #include <cstddef>
 #include <cstdint>
@@ -38,8 +24,7 @@ struct Vec3 {
     float z;  ///< Z axis.
 };
 
-/// A unit quaternion. `real` is the scalar (w) component; i/j/k are the vector
-/// components, matching the wire order i, j, k, real.
+/// Unit quaternion in wire order i, j, k, real (scalar w).
 struct Quaternion {
     float i;     ///< Vector component about X.
     float j;     ///< Vector component about Y.
@@ -61,9 +46,7 @@ struct RotationSample {
     float accuracy_rad;  ///< Heading-accuracy estimate, radians.
 };
 
-/// Compact gyro-integrated rotation vector (0x2A), delivered alone on the
-/// gyro-RV input channel: unit quaternion plus the angular velocity used to
-/// integrate it, in rad/s.
+/// Compact gyro quaternion and integrating angular velocity in rad/s (0x2A).
 struct GyroIntegratedSample {
     Quaternion unit;        ///< The integrated orientation.
     Vec3 angular_velocity;  ///< Angular velocity it was integrated from, rad/s.
@@ -91,8 +74,7 @@ struct StabilitySample {
     std::uint8_t classification;  ///< Classification enum value as sent.
 };
 
-/// Raw sensor report (0x14/0x15/0x16): unscaled ADC counts and the sensor's own
-/// microsecond timestamp; no Q-point conversion applies.
+/// Raw ADC counts and sensor timestamp in microseconds; no Q conversion.
 struct RawSample {
     std::int16_t x;           ///< X axis, ADC counts.
     std::int16_t y;           ///< Y axis, ADC counts.
@@ -102,22 +84,28 @@ struct RawSample {
 
 /// What a SensorEvent carries: the index of its payload's alternative, named.
 enum class EventKind : std::uint8_t {
-    NONE = 0,         ///< No sample: std::monostate.
-    VECTOR,           ///< Vec3: accelerometer, calibrated gyro/mag, linear
-                      ///< acceleration, gravity.
-    UNCALIBRATED,     ///< UncalibratedSample: uncalibrated gyro or
-                      ///< magnetometer, value and bias.
-    ROTATION,         ///< RotationSample: rotation vector with an accuracy
-                      ///< estimate.
-    GAME_ROTATION,    ///< Quaternion: rotation vector without one.
-    GYRO_INTEGRATED,  ///< GyroIntegratedSample: compact gyro-integrated
-                      ///< rotation vector.
-    TAP,              ///< TapSample: tap detector.
-    STEP_COUNT,       ///< StepCountSample: step counter.
-    STEP_DETECT,      ///< StepDetectSample: step detector.
-    STABILITY,        ///< StabilitySample: stability classifier.
-    RAW,              ///< RawSample: raw accelerometer, gyroscope or
-                      ///< magnetometer.
+    /// No sample: std::monostate.
+    NONE = 0,
+    /// Vec3: accelerometer, calibrated gyro/mag, linear acceleration, gravity.
+    VECTOR,
+    /// UncalibratedSample: uncalibrated gyro or magnetometer, value and bias.
+    UNCALIBRATED,
+    /// RotationSample: rotation vector with an accuracy estimate.
+    ROTATION,
+    /// Quaternion: rotation vector without an accuracy estimate.
+    GAME_ROTATION,
+    /// GyroIntegratedSample: compact gyro-integrated rotation vector.
+    GYRO_INTEGRATED,
+    /// TapSample: tap detector.
+    TAP,
+    /// StepCountSample: step counter.
+    STEP_COUNT,
+    /// StepDetectSample: step detector.
+    STEP_DETECT,
+    /// StabilitySample: stability classifier.
+    STABILITY,
+    /// RawSample: raw accelerometer, gyroscope or magnetometer.
+    RAW,
 };
 
 /// The sample a SensorEvent carries, in EventKind order: alternative N is the
@@ -135,16 +123,12 @@ struct SensorEvent {
     SensorAccuracy accuracy{SensorAccuracy::UNRELIABLE};
     /// Report delay as sent, in units of 100 us.
     std::uint16_t delay_100us{};
-    /// Absolute event time in microseconds, reconstructed from the HINTN edge,
-    /// the cargo's base/rebase timestamps, and this report's delay (SR-4). Set
-    /// during the cargo walk; zero on a directly-decoded report.
+    /// Event time in microseconds from the lead edge, base/rebases and delay
+    /// (SR-4). Set by the cargo walk; zero on direct decode.
     std::uint64_t event_us{};
-    /// True when the cargo's base delta was the reserved overflow value, so
-    /// `event_us` fell back to the HINTN edge rather than a wrong absolute
-    /// time.
+    /// True for reserved Base Delta; event_us falls back to the HINTN edge.
     bool timebase_overflow{};
-    /// The sample itself. std::get_if on it returns null for any type but the
-    /// one the report decoded to.
+    /// Decoded sample; std::get_if returns null for a different type.
     EventPayload payload;
 
     /// Which sample `payload` holds.
@@ -158,9 +142,7 @@ constexpr std::size_t payload_index(EventKind kind) noexcept {
     return static_cast<std::size_t>(kind);
 }
 
-/// Whether a payload holding a `Sample` reports `kind`. kind() is the payload's
-/// index, so the enumeration and the variant must list the same samples in the
-/// same order; each type appears once, so its index is unambiguous.
+/// True when Sample occupies kind; enum and variant must have identical order.
 template <typename Sample>
 constexpr bool kind_holds(EventKind kind) noexcept {
     return EventPayload{std::in_place_type<Sample>}.index() ==
@@ -181,7 +163,7 @@ static_assert(kind_holds<StepDetectSample>(EventKind::STEP_DETECT));
 static_assert(kind_holds<StabilitySample>(EventKind::STABILITY));
 static_assert(kind_holds<RawSample>(EventKind::RAW));
 
-/// Handed to the sink by value and copied into consumers' queues.
+/// Events can be copied into consumer queues without allocation.
 static_assert(std::is_trivially_copyable_v<SensorEvent>);
 
 }  // namespace pico_sh2::reports

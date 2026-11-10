@@ -2,20 +2,13 @@
 #pragma once
 
 /// \file sensor_id.hpp
-/// SH-2 sensor / report identifiers. These are the report IDs the hub uses on
-/// the input channels (3/4) and that the host names in Set/Get Feature on the
-/// control channel. Values are the wire report IDs. Names are spelled out in
-/// full (rather than abbreviated) partly to avoid the firmware macro-collision
-/// class: the cyw43 configport header defines a bare STATIC macro, and other
-/// SDK headers define ERROR, so short generic identifiers are avoided
-/// library-wide.
+/// SH-2 sensor IDs for feature requests and input reports (1000-3625 §6.5).
 
 #include <cstdint>
 
 namespace pico_sh2::reports {
 
-/// SH-2 sensor identifiers, as they appear in a feature report and as the first
-/// byte of the input report that sensor produces.
+/// Sensor IDs used in feature reports; compact gyro input omits its ID byte.
 enum class SensorId : std::uint8_t {
     ACCELEROMETER = 0x01,
     GYROSCOPE = 0x02,       // calibrated

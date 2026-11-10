@@ -31,12 +31,9 @@ target_include_directories(pico_sh2_sh2 PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-# Active sizing profile, PUBLIC so it reaches this module's sources and every
-# consumer that links it (profile.hpp sizes Session; library and consumers must
-# agree). "default" needs no macro — profile.hpp defaults to DefaultProfile.
-# PICO_SH2_PROFILE_HEADER is a consumer's own profile (AR-5): an absolute path
-# to a header that defines the type and PICO_SH2_ACTIVE_PROFILE, included by
-# profile.hpp. An installed package carries the path as it was at configure.
+# Library and consumers must agree on the profile for a consistent Session layout.
+# A custom header defines its type and PICO_SH2_ACTIVE_PROFILE (AR-5).
+# The installed package retains the configured path.
 set(PICO_SH2_PROFILE_HEADER "" CACHE FILEPATH
     "Header defining a consumer's sizing profile (AR-5); empty for none")
 if(PICO_SH2_PROFILE_HEADER)
@@ -59,17 +56,12 @@ elseif(PICO_SH2_PROFILE STREQUAL "large")
         PICO_SH2_PROFILE_LARGE)
 endif()
 
-# The umbrella header carries the advertised version constants and belongs to
-# pico_sh2::core, which links this module rather than the other way round. A
-# PRIVATE include directory lets session.cpp see the header for its
-# static_assert without inverting that dependency; nothing here links core.
+# Private includes expose umbrella version constants without linking back to core.
 target_include_directories(pico_sh2_sh2 PRIVATE
     $<BUILD_INTERFACE:${PICO_SH2_PUBLIC_INCLUDE_DIR}>
 )
 
-# PRIVATE: these are build-time facts for the static_assert in session.cpp, not
-# part of the target's interface. PUBLIC would propagate this build's version
-# into every installed consumer's compile line.
+# Version definitions are private to the archive's compile-time check.
 house_cxx_version_definitions(pico_sh2_sh2 pico_sh2 PRIVATE)
 
 target_compile_features(pico_sh2_sh2 PUBLIC cxx_std_20)

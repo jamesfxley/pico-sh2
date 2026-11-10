@@ -2,16 +2,10 @@
 #pragma once
 
 /// \file report_length_table.hpp
-/// Report-length table: maps an SH-2 report ID to its fixed on-wire length in
-/// bytes (the length *includes* the report-ID byte). A single input or control
-/// cargo from the hub may concatenate several fixed-length reports; splitting
-/// them requires knowing each report's length up front. A hub publishes an
-/// authoritative table in its channel-0 advertisement (tag 0x81), but a seed
-/// table lets the driver split reports before the advertisement is parsed and
-/// covers hubs that omit the tag.
-///
-/// Indexing is direct by report ID (0..255), so lookup and override are O(1)
-/// and the table cannot overflow. A length of 0 means "unknown" (UNSUPPORTED).
+/// Wire length in bytes per report ID, including the ID byte.
+/// A cargo can concatenate reports.
+/// The seed covers startup and hubs omitting report lengths; advertisement
+/// wins. Direct indexing is O(1); zero means unknown (UNSUPPORTED).
 
 #include <array>
 #include <cstddef>
@@ -21,9 +15,7 @@
 
 namespace pico_sh2::reports {
 
-/// A report's on-wire length in bytes, including the report-ID byte. Its own
-/// type so that set() cannot take a length and a report ID the wrong way
-/// round: both are a byte.
+/// Distinct byte length type to prevent swapping it with a report ID.
 struct ReportLength {
     std::uint8_t bytes;  ///< The length, in bytes.
 };
@@ -32,7 +24,7 @@ struct ReportLength {
 /// overridden by the hub's advertisement.
 class ReportLengthTable {
    public:
-    /// One entry per possible report ID, so no insertion can be refused.
+    /// Entry count, covering every possible byte-sized report ID.
     static constexpr std::size_t CAPACITY = 256;
 
     constexpr ReportLengthTable() = default;
@@ -54,23 +46,14 @@ class ReportLengthTable {
         return lengths_[report_id] != 0;
     }
 
-    /// Insert or override a length. Called for each advertisement (id, length)
-    /// pair; the advertisement is authoritative and wins over the seed.
+    /// Set an advertised length, overriding the seed.
     constexpr void set(std::uint8_t report_id, ReportLength length) {
         lengths_[report_id] = length.bytes;
     }
 
-    /// The default table for the core sensor set. The advertisement overrides
-    /// any of these at runtime; values here match the input-report definitions
-    /// of 1000-3625 (length includes the report-ID byte, the
-    /// sequence/status/delay prefix, and the report body).
-    ///
-    /// The bracketed number after each entry is that report's own subsection of
-    /// 1000-3625, so a value can be checked against the document that defines
-    /// it without first working out where to look. A table of report IDs and
-    /// byte counts is the most copyable artefact in an SH-2 implementation, so
-    /// each entry naming its source is what distinguishes this one from a
-    /// transcription.
+    /// Default lengths in bytes, including ID, prefix and body (1000-3625
+    /// §6.5). Entry comments cite their report subsection; advertisement
+    /// overrides defaults.
     static constexpr ReportLengthTable seeded() {
         ReportLengthTable table;
         table.set(0x01, ReportLength{10});  // Accelerometer  [6.5.9]
@@ -95,21 +78,18 @@ class ReportLengthTable {
         table.set(0x16, ReportLength{16});  // Raw magnetometer  [6.5.15]
         table.set(0x18, ReportLength{8});   // Step detector  [6.5.28]
         table.set(0x28, ReportLength{
-                            14});  // ARVR-stabilized rotation vector  [6.5.42]
+                            14});  // ARVR-stabilised rotation vector  [6.5.42]
         table.set(
             0x29,
-            ReportLength{12});  // ARVR-stabilized game rotation vector [6.5.43]
+            ReportLength{12});  // ARVR-stabilised game rotation vector [6.5.43]
         /// Timestamp records embedded in input cargoes (report ID + i32).
         table.set(0xFB, ReportLength{5});  // Base timestamp reference  [7.2.1]
         table.set(0xFA, ReportLength{5});  // Timestamp rebase  [7.2.2]
-        /// Flush Completed (§6.5.7) travels on the control channel, whose read
-        /// direction carries "all reports other than sensor data reports"
-        /// (1000-3600 §2.2). Seeded anyway so that a cargo batching it with
-        /// input reports costs one skipped report rather than the remainder.
+        /// Flush Completed uses control (1000-3600 §2.2); seeding its length
+        /// lets input walks skip it without losing the remaining reports.
         table.set(0xEF, ReportLength{2});  // Flush Completed  [6.5.7]
-        /// The other control-channel responses the session routes. A control
-        /// cargo may batch several reports too (1000-3600 §2.3), and is split
-        /// by this table.
+        /// Control-channel responses; control cargoes also batch reports and
+        /// are split by this table (1000-3600 §2.3).
         table.set(0xF1, ReportLength{16});  // Command Response  [6.3.9]
         table.set(0xF3, ReportLength{16});  // FRS Read Response  [6.3.7]
         table.set(0xF5, ReportLength{4});   // FRS Write Response  [6.3.5]

@@ -2,12 +2,9 @@
 #pragma once
 
 /// \file fake_hub.hpp
-/// Host-only SH-2 hub emulator implementing IHalTransport at the bus level.
-/// Tests script inbound transfers (with controllable HINTN timestamps), drive
-/// time, capture host writes, and inject failures, so the SHTP/SH-2 stack is
-/// exercised end-to-end without hardware. This is test-support code: it uses
-/// the heap freely (the zero-post-init-heap rule governs the library on-device,
-/// not the fakes).
+/// Host-only scripted bus, clock and faults for exercising the stack without
+/// hardware. Test support uses the heap; on-device allocation rules do not
+/// apply.
 
 #include <cstddef>
 #include <cstdint>
@@ -20,14 +17,12 @@
 
 namespace pico_sh2::testing {
 
-/// A scripted hub on the far side of IHalTransport: queue the transfers it
-/// should hand back, drive its clock, capture what the host wrote, and inject
-/// bus faults.
+/// Scripted transport: queue the transfers it should return, drive time and
+/// inject errors.
 class FakeHub final : public IHalTransport {
    public:
-    /// A raw inbound transfer (full SHTP frame: 4-byte header + payload) the
-    /// hub will hand back on the next read, tagged with the HINTN edge
-    /// timestamp the driver should observe for it.
+    /// Full SHTP frame and the HINTN timestamp the driver should observe with
+    /// its read.
     struct ScriptedTransfer {
         std::vector<std::uint8_t> frame;  ///< Full SHTP frame, header first.
         std::uint64_t intn_timestamp_us;  ///< HINTN edge reported with it.
@@ -38,7 +33,7 @@ class FakeHub final : public IHalTransport {
         std::vector<std::uint8_t> frame;  ///< The bytes the host sent.
     };
 
-    /// --- scripting ---
+    /// Copy a frame and edge timestamp into the inbound script.
     void queue_transfer(std::span<const std::uint8_t> frame,
                         std::uint64_t intn_timestamp_us);
 
@@ -52,34 +47,23 @@ class FakeHub final : public IHalTransport {
     /// modelling a bus fault mid-drain. Consumed once.
     void fail_next_read(Sh2Error error) { fail_read_after(0, error); }
 
-    /// Make read_transfer() fail with `error` only after `successful_reads`
-    /// more reads have succeeded, so a test can put a fault partway through a
-    /// multi-transfer drain rather than at its head. Consumed once.
+    /// Fail once after successful_reads more reads with pending input have
+    /// succeeded.
     void fail_read_after(std::size_t successful_reads, Sh2Error error) {
         reads_until_error_ = successful_reads;
         next_read_error_ = error;
     }
 
-    /// Queue an idle poll: the hub asserts HINTN and then hands back a
-    /// header-only transfer with a zero length, which is what a BNO086 does
-    /// when polled with nothing to say, and what a dead or absent bus reads as.
-    ///
-    /// Scripted rather than left to a hand-rolled `queue_transfer({0,0,0,0})`
-    /// because this is the case the seam's contract turns on: a read of it
-    /// **succeeds**, and a transport returning an error here would fault an
-    /// otherwise healthy session.
+    /// Queue a successful null-header read with the supplied edge timestamp.
     void queue_idle_transfer(std::uint64_t intn_timestamp_us = 0);
 
-    /// Queue the three cargoes a hub sends on its way up: the command-channel
-    /// advertisement, the device channel's reset-complete, and the unsolicited
-    /// Initialize response. `sequence` stamps all three, so a second call after
-    /// a hub reset can present a fresh sequence rather than repeating the
-    /// first. The two announcements are issued by independent applications and
-    /// the session does not depend on their order; this queues one of the two.
+    /// Queue advertisement, reset-complete and Initialize with one sequence
+    /// value. The session accepts either announcement order; this scripts
+    /// reset-complete first.
     void queue_startup(std::uint64_t intn_timestamp_us = 0,
                        std::uint8_t sequence = 0);
 
-    /// --- capture / inspection ---
+    /// Captured host writes in arrival order.
     [[nodiscard]] const std::vector<CapturedWrite>& writes() const {
         return writes_;
     }
@@ -87,18 +71,12 @@ class FakeHub final : public IHalTransport {
     /// Whether the host currently holds the hub in reset.
     [[nodiscard]] bool reset_asserted() const { return reset_asserted_; }
 
-    /// --- IHalTransport ---
+    /// True while scripted input remains.
     bool data_ready() override { return !inbound_.empty(); }
 
-    /// Reads the next scripted transfer, or -- with nothing queued -- reports a
-    /// header-only transfer of zero length, exactly as a real transport does
-    /// for an absent hub. **Not an error:** the session's drain loop faults on
-    /// any read error, and permanently so during startup, which is why both
-    /// shipped transports report an absent hub as success and why this fake
-    /// must do the same. A fake that returned an error here would teach the
-    /// opposite of the contract to anyone reading it for one. The edge it
-    /// reports is the transfer's scripted one, or with nothing queued the last
-    /// one read, as the interface requires of a read with no fresh edge.
+    /// Read scripted input; with nothing queued, the fake must return a
+    /// successful null header with the last edge. A destination smaller than
+    /// the header returns BUS_ERROR when idle.
     Result<ReceivedTransfer> read_transfer(
         std::span<std::uint8_t> dst) override;
     Result<void> write_transfer(std::span<const std::uint8_t> frame) override;

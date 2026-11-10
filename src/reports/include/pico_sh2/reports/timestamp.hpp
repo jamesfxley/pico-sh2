@@ -2,27 +2,7 @@
 #pragma once
 
 /// \file timestamp.hpp
-/// Timestamp reconstruction (SH-2 Reference Manual, section 7.2). Batched input
-/// reports do not carry absolute times; each carries a 14-bit delay (100 us
-/// units, at most 16383 ticks). A Base Timestamp Reference record (0xFB) gives
-/// a signed Base Delta in 100 us ticks relative to the transport reference
-/// point (the HINTN edge that triggered the read). A Timestamp Rebase record
-/// (0xFA) carries a further signed delta, used when a batch spans more than the
-/// delay field can express. An event's absolute time is:
-///
-///   event_us = intn_edge_us - 100 * base_delta + 100 * (rebases +
-///   report_delay)
-///
-/// The Base Delta is subtracted: it measures how far the batch's shared base
-/// sits *before* the reference point. 1000-3625 section 7.2.1 states that for a
-/// HINT at time t and a Base Delta of 10, the batch's timestamps are relative
-/// to t - 1 ms; section 7.2.2 works the same example with a base delta of 4.0 s
-/// against a HINT at 5.0 s giving a base of 1.0 s. Rebases and the per-report
-/// delay both move forward from that base.
-///
-/// Base Delta = 0x7FFFFFFF is reserved: it means the true delta exceeded the
-/// 32-bit range. Such events are marked overflowed and fall back to the HINTN
-/// edge time rather than reporting a wrong absolute time.
+/// Event-time reconstruction in microseconds (1000-3625 §7.2).
 
 #include <algorithm>
 #include <cstdint>
@@ -37,10 +17,8 @@ inline constexpr std::int32_t TIMEBASE_OVERFLOW = 0x7FFFFFFF;
 /// report delay field.
 inline constexpr std::uint64_t TICK_US = 100;
 
-/// A running timebase for one input cargo: the HINTN edge the read was
-/// triggered from, plus the accumulated signed offset in 100 us ticks — the
-/// negated base delta, plus any rebases. `overflow` latches when the base delta
-/// was the reserved value.
+/// Timebase for one cargo.
+/// Its offset is the negated Base Delta plus rebases, in 100-microsecond ticks.
 struct Timebase {
     /// The HINTN edge the cargo's read was triggered from.
     std::uint64_t intn_edge_us;
@@ -51,9 +29,7 @@ struct Timebase {
     bool overflow;
 };
 
-/// Begin a timebase from a 0xFB Base Delta captured at the given HINTN edge.
-/// The delta is negated on the way in, so the stored offset is already the
-/// signed displacement from the edge to the batch's shared base.
+/// Start from Base Delta; negation gives the signed displacement from HINTN.
 constexpr Timebase timebase_begin(std::uint64_t intn_edge_us,
                                   std::int32_t base_delta) {
     if (base_delta == TIMEBASE_OVERFLOW) {
@@ -74,10 +50,9 @@ constexpr Timebase timebase_rebase(Timebase base, std::int32_t rebase_delta) {
     return base;
 }
 
-/// Absolute time of a report with the given 14-bit delay. On an overflowed base
-/// the HINTN edge time is returned. A computed time before zero is clamped to
-/// 0, and one past the top of the range to its maximum: every input, including
-/// an edge anywhere in the 64-bit range, has a defined result.
+/// Event time for a 14-bit delay; overflow returns the HINTN edge.
+/// Computed times saturate at zero and UINT64_MAX, including edges across the
+/// full range.
 constexpr std::uint64_t timebase_event_us(Timebase base,
                                           std::uint16_t delay_100us) {
     if (base.overflow) {

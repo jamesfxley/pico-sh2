@@ -2,12 +2,7 @@
 #pragma once
 
 /// \file result.hpp
-/// This library's error taxonomy, and the Result type carrying it.
-///
-/// The container is `pico_util::Result`; the vocabulary is this library's. A
-/// driver's bus errors and a protocol engine's framing errors are not one
-/// taxonomy, so the base layer takes the error type as a parameter and each
-/// library names its own. `Sh2Error` is what belongs here.
+/// Library error vocabulary carried by pico_util::Result.
 
 #include <cstdint>
 
@@ -27,10 +22,8 @@ enum class Sh2Error : std::uint8_t {
 
     /// SHTP framing.
     BAD_HEADER,       // reserved length (0xFFFF) or otherwise malformed header
-    CARGO_TOO_LARGE,  // outbound cargo will not fit one transfer (hub cannot
-                      /// reassemble)
-    REASSEMBLY_DROP,  // inbound fragmented cargo dropped (overflow /
-                      // interleave)
+    CARGO_TOO_LARGE,  // outbound cargo exceeds one transfer (no fragmentation)
+    REASSEMBLY_DROP,  // inbound fragmented cargo dropped: overflow, interleave
 
     /// SH-2 session.
     PROTOCOL,     // hub response violated the expected protocol sequence
@@ -42,13 +35,9 @@ enum class Sh2Error : std::uint8_t {
     HUB_RESET,         // the hub reset while the operation was in progress
 };
 
-/// This library's Result: a value or an `Sh2Error`, never both.
-///
-/// No exceptions and no heap, trivially copyable when `T` is, and
-/// `[[nodiscard]]` at class scope — so `session.set_feature(config);` on its
-/// own line draws a diagnostic, an error under `-Werror`, rather than dropping
-/// a QUEUE_FULL in silence.
-/// `Result<void>` is the no-value form.
+/// A value or Sh2Error, never both; Result<void> carries no value.
+/// No exceptions or heap; trivially copyable when T is. [[nodiscard]] makes an
+/// ignored result a diagnostic, failing builds with -Werror.
 template <typename T>
 using Result = pico_util::Result<T, Sh2Error>;
 

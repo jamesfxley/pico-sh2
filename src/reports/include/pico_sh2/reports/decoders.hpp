@@ -2,15 +2,9 @@
 #pragma once
 
 /// \file decoders.hpp
-/// Report decoding. A cargo delivered on an input channel (3/4) is a run of
-/// concatenated fixed-length input reports; `walk_input_cargo` splits it using
-/// the report-length table and decodes each report to a SensorEvent, delivered
-/// to a sink. Individual reports can also be decoded directly for testing.
-///
-/// Decoding is table-driven: a constexpr registry maps each report ID to its
-/// wire length and a decode function, and a compile-time check binds those
-/// lengths to the report-length seed so the two cannot drift. Adding a sensor
-/// is a struct, a decode function, and one table row.
+/// Decoders that turn cargo into typed events.
+/// Batched reports use normal/wake roles; the decoder table's lengths are
+/// checked against the report-length seed.
 
 #include <cstdint>
 #include <span>
@@ -26,11 +20,7 @@ namespace pico_sh2::reports {
 /// Sink invoked once per successfully decoded event during a cargo walk.
 using EventSink = pico_util::Callback<void(const SensorEvent&)>;
 
-/// Outcome tallies for one cargo walk. `unknown_reports` and
-/// `truncated_reports` are terminal for the walk (it cannot resynchronize past
-/// a report of unknown length or one that overruns the cargo);
-/// `reports_skipped` counts reports of known length with no compiled decoder,
-/// which are stepped over.
+/// Accumulated walk counts; unknown lengths and overruns end a cargo's walk.
 struct WalkStats {
     /// Reports decoded into an event and delivered.
     std::uint32_t events_decoded = 0;
@@ -42,32 +32,21 @@ struct WalkStats {
     std::uint32_t truncated_reports = 0;
 };
 
-/// Decode a single input report (report ID at byte 0, common prefix, payload).
-/// Returns UNSUPPORTED if no decoder is registered for the report ID, or
-/// INVALID_ARGUMENT if the span is shorter than the report's wire length.
-/// `q_overrides` supplies per-report Q points that replace the compiled
-/// defaults (DR-2); an empty table (the default) decodes with the compiled Q.
+/// Decode one prefixed report with optional Q overrides (DR-2).
+/// UNSUPPORTED means no decoder; INVALID_ARGUMENT means empty or short input.
 Result<SensorEvent> decode_report(std::span<const std::uint8_t> report,
                                   const QOverrideTable& q_overrides = {});
 
-/// Decode a compact gyro-integrated rotation vector (report 0x2A) delivered
-/// one-per-transfer on the gyro-RV input channel. This report has no common
-/// prefix, report ID, or delay field; the transfer's payload is exactly the
-/// 14-byte report. `q_overrides` may override the quaternion's Q point; the
-/// angular velocity's is fixed at Q10 (DR-2).
+/// Decode one 14-byte compact gyro report, without prefix, ID or delay.
+/// Overrides may change quaternion Q; angular velocity stays Q10 (DR-2).
 Result<SensorEvent> decode_gyro_integrated(
     std::span<const std::uint8_t> payload,
     const QOverrideTable& q_overrides = {});
 
-/// Split and decode a cargo from the normal or wake input channel. `lengths`
-/// supplies each report's on-wire length (the advertisement-overridable table)
-/// and `q_overrides` its decode-time Q points (DR-2); every decoded event is
-/// passed to `sink`. Embedded Base Timestamp (0xFB) and Timestamp Rebase (0xFA)
-/// records set the running timebase; `intn_edge_us` is the HINTN-edge time the
-/// cargo was read at, and each decoded event's `event_us` is reconstructed from
-/// it (SR-4). Returns PROTOCOL if a report of unknown length or one that
-/// overruns the cargo is encountered (the walk stops, having counted it); NONE
-/// when the whole cargo is consumed.
+/// Split normal/wake input by lengths, applying Q overrides (DR-2).
+/// Timestamp records and the lead HINTN edge set event_us (SR-4).
+/// Decoded events reach sink during the walk. Unknown lengths or overruns stop
+/// it with PROTOCOL and a count; consuming the whole cargo returns success.
 Result<void> walk_input_cargo(std::span<const std::uint8_t> cargo,
                               const ReportLengthTable& lengths,
                               const QOverrideTable& q_overrides,

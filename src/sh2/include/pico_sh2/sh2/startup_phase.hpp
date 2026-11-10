@@ -5,8 +5,7 @@
 
 namespace pico_sh2 {
 
-/// Where the hub is in its startup sequence. Reported by Session as the phase a
-/// fault happened in, so a deadline expiry is attributable to a distinct step.
+/// Startup phase, preserved on failure so the consumer can identify the step.
 enum class StartupPhase : std::uint8_t {
     IDLE = 0,             ///< constructed; begin() not yet called
     RESET_ASSERTED,       ///< NRST held low, waiting out the hold time

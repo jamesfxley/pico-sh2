@@ -10,14 +10,12 @@
 namespace pico_sh2::shtp {
 namespace {
 
-// The GUID of the SHTP application itself (1000-3535 §5.2). Its tag 0x81 is a
-// UART timeout, not report lengths, and its "control" channel is the command
-// channel rather than SH-2's control channel.
+// SHTP application's GUID (1000-3535 §5.2).
 constexpr std::uint32_t SHTP_GUID = 0;
 
 // A ChannelName is NUL-terminated; the NUL is not part of its name.
 // Accepting an unterminated name as its whole value is a library choice.
-// 1000-3535 §5.2 requires ignoring unrecognized tags, not malformed names.
+// 1000-3535 §5.2 requires ignoring unrecognised tags, not malformed names.
 std::span<const std::uint8_t> trim_name(std::span<const std::uint8_t> value) {
     std::size_t length = 0;
     while (length < value.size() && value[length] != 0) {
@@ -31,7 +29,7 @@ std::span<const std::uint8_t> trim_name(std::span<const std::uint8_t> value) {
 // limit, UNCONFIRMED (NR-4, FW-5).
 constexpr std::size_t GUID_MAX_BYTES = sizeof(std::uint32_t);
 
-// The caller has refused a value longer than GUID_MAX_BYTES.
+// The caller has rejected values longer than GUID_MAX_BYTES.
 std::uint32_t parse_guid(std::span<const std::uint8_t> value) {
     std::uint32_t guid = 0;
     for (std::size_t i = 0; i < value.size(); ++i) {
@@ -64,14 +62,10 @@ Result<std::size_t> parse_advertisement(std::span<const std::uint8_t> cargo,
     std::size_t pairs_applied = 0;
     std::size_t offset = 0;
     std::uint32_t guid = SHTP_GUID;
-    // Tag 0x81 means "Report Lengths" only under the sensorhub; the SHTP
-    // application uses it for a UART timeout and any other application for its
-    // own purpose. Suppressed until the sensorhub's GUID opens scope, so a
-    // stray pre-GUID 0x81 is never misread.
+    // Report-length tags before a non-empty sensorhub GUID are ignored.
     bool in_sensorhub_scope = false;
 
-    // A channel tag names the channel that follows it, so the emit is deferred
-    // until the next tag is known to be (or not to be) its ChannelName.
+    // Defer emission until the following tag can supply a ChannelName.
     AdvertisedChannel pending;
     bool has_pending = false;
     auto flush_pending = [&]() {
@@ -107,8 +101,7 @@ Result<std::size_t> parse_advertisement(std::span<const std::uint8_t> cargo,
         flush_pending();
 
         if (tag == GUID_TAG) {
-            // A longer GUID names an application this parse cannot tell from
-            // another, and the roles bound to it would be guesses (SR-10).
+            // An over-wide GUID cannot identify a role unambiguously (SR-10).
             if (value_len > GUID_MAX_BYTES) {
                 return Sh2Error::PROTOCOL;
             }

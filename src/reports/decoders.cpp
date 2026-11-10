@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Report decoders: the constexpr {report ID, wire length, decode fn} dispatch
-// table, per-sensor Q-point conversions, and the input-cargo walk. All byte
-// offsets, Q points, and wire lengths are from the SH-2 Reference Manual,
-// section 6.5. Wire lengths are bound at compile time to the report-length seed
-// (report_length_table.hpp) so a decoder and the splitter cannot disagree.
+// Input decoder table and cargo walk; offsets, scaling and lengths follow
+// 1000-3625 §6.5, with timestamp records from §7.2.
 #include "pico_sh2/reports/decoders.hpp"
 
 #include <algorithm>
@@ -51,11 +48,8 @@ constexpr float field(std::span<const std::uint8_t> report, std::size_t offset,
 // Payload begins after the 4-byte common prefix.
 constexpr std::size_t PAYLOAD = INPUT_REPORT_PREFIX_SIZE;
 
-// Each decoder receives the report's resolved Q points (`q_points.primary` for
-// the main data field(s), `q_points.secondary` for the one auxiliary field a
-// few reports carry). The values default to the report's compiled Q (the
-// `default_q` in the registry below) but may be overridden per part at decode
-// time (DR-2); a decoder that uses no fixed-point field ignores `q_points`.
+// Compiled Q values may be overridden per part at decode time; unscaled
+// fields ignore Q (DR-2).
 
 // Three-axis engineering-unit report: accelerometer (Q8), calibrated gyro (Q9),
 // calibrated magnetometer (Q4), linear acceleration (Q8), gravity (Q8).
@@ -66,10 +60,8 @@ void decode_vector(std::span<const std::uint8_t> report, ReportQ q_points,
                          .z = field(report, PAYLOAD + 4, q_points.primary)};
 }
 
-// Uncalibrated three-axis report: the sample (primary) plus the removed bias
-// (secondary). A part's metadata may give the two different Q points (Q point
-// 1 and 2 of 1000-3625 §5.1); both default to the one Q its report section
-// states. Uncalibrated gyro (Q9), uncalibrated magnetometer (Q4).
+// Primary scales the sample; secondary scales removed bias (1000-3625 §5.1).
+// Both default to Q9 for gyro or Q4 for magnetometer.
 void decode_uncalibrated(std::span<const std::uint8_t> report, ReportQ q_points,
                          SensorEvent& event) {
     const unsigned primary = q_points.primary;
@@ -85,7 +77,7 @@ void decode_uncalibrated(std::span<const std::uint8_t> report, ReportQ q_points,
 
 // Rotation vector with accuracy: quaternion i,j,k,real (primary, Q14) plus a
 // heading accuracy in radians (secondary, Q12). Rotation vector, geomagnetic
-// RV, AR/VR-stabilized RV.
+// RV, AR/VR-stabilised RV.
 void decode_rotation(std::span<const std::uint8_t> report, ReportQ q_points,
                      SensorEvent& event) {
     const unsigned primary = q_points.primary;
@@ -98,7 +90,7 @@ void decode_rotation(std::span<const std::uint8_t> report, ReportQ q_points,
 }
 
 // Rotation vector without accuracy: quaternion i,j,k,real (primary, Q14).
-// Game rotation vector, AR/VR-stabilized game rotation vector.
+// Game rotation vector, AR/VR-stabilised game rotation vector.
 void decode_game_rotation(std::span<const std::uint8_t> report,
                           ReportQ q_points, SensorEvent& event) {
     const unsigned primary = q_points.primary;
@@ -157,11 +149,8 @@ struct DecoderEntry {
     DecodeFn fn;
 };
 
-// The decoder registry. Wire lengths match the report-length seed (checked
-// below). `default_q` is the compiled Q point(s) from the SH-2 Reference Manual
-// §6.5, used unless a metadata override is installed (DR-2). Report 0x2A
-// (gyro-integrated RV) is decoded separately — it is not a prefixed input
-// report and is never split from a cargo.
+// Compiled lengths and Q defaults (1000-3625 §6.5); metadata can override Q
+// (DR-2). Compact report 0x2A has no prefix and uses a separate decoder.
 constexpr std::array<DecoderEntry, 19> DECODERS = {{
     {.id = SensorId::ACCELEROMETER,
      .wire_length = 10,
@@ -304,11 +293,8 @@ Result<SensorEvent> decode_report(std::span<const std::uint8_t> report,
 
 Result<SensorEvent> decode_gyro_integrated(
     std::span<const std::uint8_t> payload, const QOverrideTable& q_overrides) {
-    // Quaternion i,j,k,real (Q14) then angular velocity x,y,z (Q10); no prefix.
-    // The report has no bias or accuracy field, so applicability of metadata Q
-    // point 2 is UNCONFIRMED (FW-5; 1000-3625 §5.1, §6.5.44) and the angular
-    // velocity keeps the Q its report section fixes (§6.5.44); only the
-    // quaternion's Q is overridable.
+    // Angular velocity keeps the fixed Q10 scale (1000-3625 §6.5.44); whether
+    // metadata Q point 2 applies is UNCONFIRMED (FW-5).
     constexpr std::size_t GIRV_LENGTH = 14;
     constexpr unsigned GIRV_ANGULAR_VELOCITY_Q = 10;
     constexpr auto GIRV_ID =
@@ -361,8 +347,8 @@ Result<void> walk_input_cargo(std::span<const std::uint8_t> cargo,
         const bool timestamp = report_id == BASE_TIMESTAMP_REPORT ||
                                report_id == TIMESTAMP_REBASE_REPORT;
         if (timestamp && report_len < TIMESTAMP_RECORD_SIZE) {
-            // An advertised length too short to carry the delta: every event
-            // after it would be timed from bytes that are not a delta.
+            // A short timestamp record would time later events from unrelated
+            // bytes.
             ++stats.truncated_reports;
             return Sh2Error::PROTOCOL;
         }

@@ -2,21 +2,10 @@
 #pragma once
 
 /// \file channel_binding.hpp
-/// SR-10: SH-2's channel vocabulary — which advertised channel plays which
-/// role.
-///
-/// 1000-3600 §2.2 names SH-2's five channels device, control, inputNormal,
-/// inputWake and inputGyroRv, and §2.3 shows how they are advertised — the
-/// executable application (GUID 1) owning `device`, the sensorhub (GUID 2)
-/// owning the rest. §2.3 also states that the base channel number "may be
-/// selected at compile time or run time depending on the specific
-/// implementation", which is why the numbers are read from the hub rather than
-/// written down here.
-///
-/// Matching is scoped to the advertising GUID and not done on the name alone.
-/// The SHTP application advertises a channel named "control" as well — it is
-/// the command channel — so a name-only match binds SH-2's control role to
-/// channel 0 and every control write goes to the wrong place.
+/// Roles match by application GUID and channel name (SR-10).
+/// Channel numbers are advertised (1000-3600 §2.3). The base may be selected
+/// at compile time or run time, depending on the implementation (§2.3).
+/// GUID matching avoids confusing SHTP's own "control" with SH-2 control.
 
 #include <cstdint>
 #include <optional>
@@ -32,9 +21,7 @@ inline constexpr std::uint32_t EXECUTABLE_GUID = 1;
 /// The sensorhub application, which owns the control and input channels.
 inline constexpr std::uint32_t SENSORHUB_GUID = shtp::SENSORHUB_GUID;
 
-/// The role an advertised channel plays, or nothing if it is not one of SH-2's.
-/// Channels belonging to any other application, and SHTP's own, are not SH-2's
-/// to route.
+/// SH-2 role, or nullopt for an unrecognised GUID or channel name.
 constexpr std::optional<shtp::ChannelRole> role_of_advertised(
     const shtp::AdvertisedChannel& channel) {
     if (channel.guid == EXECUTABLE_GUID) {

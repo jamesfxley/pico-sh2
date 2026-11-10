@@ -15,9 +15,7 @@
 namespace pico_sh2::testing {
 
 void FakeHub::queue_idle_transfer(std::uint64_t intn_timestamp_us) {
-    // A zero-length header: four bytes, all zero. parse_header() accepts it as
-    // a valid null transfer (length 0), which is the empty keep-alive a hub
-    // emits when polled with nothing pending.
+    // Length zero is a null transfer (1000-3535 §2.3.1).
     const std::vector<std::uint8_t> null_header(shtp::HEADER_SIZE, 0);
     queue_transfer(null_header, intn_timestamp_us);
 }
@@ -41,9 +39,8 @@ void FakeHub::queue_transfer(std::span<const std::uint8_t> frame,
 
 Result<ReceivedTransfer> FakeHub::read_transfer(std::span<std::uint8_t> dst) {
     if (inbound_.empty()) {
-        // An absent hub, reported the way the real transports report it: a
-        // zeroed header and success. Returning an error would fault an
-        // otherwise healthy session, and permanently so during startup.
+        // Idle reads succeed with a null header, as described in the usage
+        // guide.
         if (dst.size() < shtp::HEADER_SIZE) {
             return Sh2Error::BUS_ERROR;
         }
@@ -65,8 +62,7 @@ Result<ReceivedTransfer> FakeHub::read_transfer(std::span<std::uint8_t> dst) {
     std::copy_n(transfer.frame.begin(), n, dst.begin());
     last_edge_us_ = transfer.intn_timestamp_us;
     const ReceivedTransfer received{.length = n, .intn_edge_us = last_edge_us_};
-    // A short read leaves the remainder to be re-offered as a continuation; the
-    // full-frame case (the common one) consumes the transfer.
+    // A short read retains the original scripted frame for the next read.
     if (n == transfer.frame.size()) {
         inbound_.pop_front();
     }
