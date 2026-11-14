@@ -1,37 +1,20 @@
 // SPDX-License-Identifier: MIT
-// Consumer-side view of the installed package. Nothing here reaches into the
-// source tree: every symbol below must arrive through the installed
-// pico_sh2::core target, resolved by find_package, so a header the package
-// fails to ship is a compile error in this test rather than a discovery made by
-// the first downstream project.
-//
-// pico_sh2::core is an INTERFACE aggregate over four component targets. Its
-// export is the thing most likely to break silently: a component dropped from
-// the export set still links in-tree, because the in-tree alias resolves
-// regardless, and fails only once a consumer resolves it through the installed
-// config file.
+// Installed headers and symbols must reach this consumer through find_package
+// and its imported targets. In-tree aliases cannot exercise missing exports.
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <span>
 
 #include "pico_sh2/pico_sh2.hpp"
-// The hub emulator the package ships for downstream tests; pico-bno085's driver
-// tests link it. Included so a pico_sh2::testing that left the export set, or
-// whose headers did not install, is a compile error here rather than a
-// downstream discovery.
+// Construction below checks both the installed testing header and its archive.
 #include "pico_sh2/testing/fake_hub.hpp"
 
 static_assert(pico_sh2::VERSION_MAJOR == 0 && pico_sh2::VERSION_MINOR == 1);
 
-// Consumer-side view of the sizing profile. Nothing here defines a profile
-// macro; PICO_SH2_ACTIVE_PROFILE must arrive through the installed target's
-// compile definitions. The declared consumer cases in house.toml pin the
-// profile they install and name it with EXPECT_DEFAULT, EXPECT_LARGE or
-// EXPECT_CUSTOM, so a profile lost at the install boundary is a compile error
-// here rather than a silently default-sized consumer. With none of them the
-// consumer takes whatever profile the build selected (a CI leg may select
-// large), and asserts only that it compiles and runs against it.
+// PICO_SH2_ACTIVE_PROFILE must propagate through installed compile definitions.
+// EXPECT_DEFAULT, EXPECT_LARGE and EXPECT_CUSTOM select assertions.
+// Without one, this accepts any profile, including large.
 using Profile = PICO_SH2_ACTIVE_PROFILE;
 #if defined(EXPECT_LARGE)
 static_assert(Profile::MAX_CARGO_LEN == 1024,
@@ -49,14 +32,9 @@ static_assert(Profile::MAX_CARGO_LEN == 384,
 
 namespace {
 
-// Enough of a transport to construct and pump a session without reaching for
-// the shipped emulator: a consumer's own transport is the case this stands in
-// for, and FakeHub is exercised separately below.
-//
-// final: the base declares its destructor protected and non-virtual on purpose
-// (a transport is owned by whoever supplies it, never deleted through this
-// pointer). A derived class with virtual functions and a public non-virtual
-// destructor reopens exactly that hazard unless it cannot be derived from.
+// A consumer-owned transport exercises construction without FakeHub.
+// final: the public non-virtual destructor is safe only while nothing derives
+// from this class.
 class SilentTransport final : public pico_sh2::IHalTransport {
    public:
     bool data_ready() override { return false; }
@@ -88,8 +66,7 @@ int main() {
     std::printf("pico_sh2 %d.%d.%d\n", pico_sh2::VERSION_MAJOR,
                 pico_sh2::VERSION_MINOR, pico_sh2::VERSION_PATCH);
 
-    // The shipped emulator, from the installed package alone. Constructing it
-    // is what proves the archive linked, not just that the header was found.
+    // Construction requires the installed archive as well as the header.
     pico_sh2::testing::FakeHub hub;
     hub.queue_startup();
     if (!hub.data_ready()) {
@@ -98,9 +75,7 @@ int main() {
     }
 
     SilentTransport transport;
-    // Timing is the consumer's to supply: the library ships no defaults,
-    // because a reset hold and a boot delay describe a part rather than the
-    // protocol. These stand in for a datasheet's numbers.
+    // Host timing follows tests/sh2/session_fixture.hpp.
     const pico_sh2::SessionTiming timing{
         .reset_hold_us = 2'000,
         .boot_delay_us = 100'000,
@@ -123,9 +98,7 @@ int main() {
         return 1;
     }
 
-    // The report-length seed reaches a consumer through the aggregate too --
-    // it comes from pico_sh2::reports, a different component target than the
-    // session, so this fails if that component left the export set.
+    // The length seed also needs the installed reports component.
     if (session.report_lengths()
             .length_of(static_cast<std::uint8_t>(
                 pico_sh2::reports::SensorId::ROTATION_VECTOR))

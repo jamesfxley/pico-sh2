@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Session tests: the control-channel request surface: feature configuration,
-// the single-in-flight command transaction (SR-2), the outbound queue (BR-2),
-// and the diagnostics hook (OR-2).
+// Control requests, command correlation, queue errors and diagnostics
+// (SR-2, BR-2, OR-2).
 #include <gtest/gtest.h>
 
 #include <cstddef>
@@ -26,10 +25,6 @@
 
 namespace {
 
-// Named one at a time rather than with a using-directive: this suite
-// reaches for a handful of helpers, and a budget line it does not need
-// is budget spent for nothing. Each is named in the namespace that
-// defines it.
 using pico_sh2::sh2_test::advance_to_wait_advertisement;
 using pico_sh2::sh2_test::CommandCapture;
 using pico_sh2::sh2_test::DiagObserver;
@@ -50,9 +45,8 @@ using pico_sh2::testing::reset_complete;
 using pico_sh2::Session;
 using pico_sh2::Sh2Error;
 
-// A Session holds pointers into itself -- the engine's view of its reassembly
-// buffer, callbacks bound to it, the TX path's view of its channel map -- so a
-// copy or a move would leave them aimed at the original.
+// Copying or moving would leave internal buffer views and callbacks
+// pointing into the original session.
 TEST(Session, IsNeitherCopyableNorMovable) {
     static_assert(!std::is_copy_constructible_v<Session>);
     static_assert(!std::is_copy_assignable_v<Session>);
@@ -61,7 +55,7 @@ TEST(Session, IsNeitherCopyableNorMovable) {
     SUCCEED();
 }
 
-// SR-8: a Set Feature request is enqueued on the control channel.
+// Set Feature is queued on the control channel (SR-8).
 TEST(Session, SetFeatureEmitsCargo) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -82,8 +76,7 @@ TEST(Session, SetFeatureEmitsCargo) {
     EXPECT_EQ(session.counters().cargoes_out, 1U);
 }
 
-// SR-8: a Get Feature request is emitted on the control channel as 0xFE and
-// the sensor's report ID.
+// Get Feature sends 0xFE and the sensor ID on the control channel (SR-8).
 TEST(Session, GetFeatureEmitsCargo) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -100,8 +93,7 @@ TEST(Session, GetFeatureEmitsCargo) {
               static_cast<std::uint8_t>(pico_sh2::reports::SensorId::GRAVITY));
 }
 
-// SR-8: a Get Feature Response shorter than the report is a protocol error
-// and does not reach the sink.
+// A short Get Feature Response is a protocol error and reaches no sink (SR-8).
 TEST(Session, AShortGetFeatureResponseIsNotDelivered) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -121,8 +113,7 @@ TEST(Session, AShortGetFeatureResponseIsNotDelivered) {
     EXPECT_EQ(session.counters().protocol_errors, 1U);
 }
 
-// SR-8: control-channel requests are refused with NOT_READY before the
-// handshake completes.
+// Control requests return NOT_READY before the handshake completes (SR-8).
 TEST(Session, RequestsBeforeReadyAreNotReady) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -134,7 +125,7 @@ TEST(Session, RequestsBeforeReadyAreNotReady) {
               Sh2Error::NOT_READY);
 }
 
-// SR-8: a Get Feature Response is parsed and delivered to the feature sink.
+// A Get Feature Response reaches the feature sink (SR-8).
 TEST(Session, GetFeatureResponseRoutedToSink) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -203,8 +194,8 @@ TEST(Session, UnsolicitedResponseDoesNotCompleteCommand) {
     ASSERT_TRUE(session.send_command(pico_sh2::command::COUNTER).ok());
     session.service();
 
-    // An unsolicited response with the same command sequence must not complete
-    // the pending command (SR-2), but is still delivered.
+    // An unsolicited response must not complete the pending command,
+    // even with a matching sequence; it still reaches the sink (SR-2).
     hub.queue_transfer(
         frame(2, 1, command_response(pico_sh2::command::COUNTER, 0, true)), 0);
     session.service();
@@ -213,9 +204,8 @@ TEST(Session, UnsolicitedResponseDoesNotCompleteCommand) {
     ASSERT_EQ(cap.responses.size(), 1U);
 }
 
-// SR-2: a solicited response completes the command only when it echoes the
-// request's sequence. One echoing another sequence is delivered and leaves
-// the command pending.
+// A response echoing another request sequence reaches the sink
+// without completing the pending command (SR-2).
 TEST(Session, AResponseToAnotherSequenceDoesNotCompleteTheCommand) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -250,9 +240,8 @@ TEST(Session, CommandTimesOut) {
     EXPECT_EQ(session.counters().command_timeouts, 1U);
 }
 
-// TR-1: a deadline is now plus the timeout, saturated, so the longest timeout
-// a SessionTiming accepts means "not before the clock's end" rather than
-// wrapping to the past and expiring at the next service().
+// The deadline for the longest timeout saturates at the clock limit
+// and does not expire on the next service() call (TR-1).
 TEST(Session, TheLongestStartupTimeoutDoesNotWrap) {
     FakeHub hub;
     pico_sh2::SessionTiming timing = test_timing();
@@ -291,9 +280,8 @@ TEST(Session, TxQueueOverflowSurfaced) {
     FakeHub hub;
     Session session = make_session(hub);
     drive_to_ready(hub, session);
-    // Enqueue without servicing (nothing flushes) until the queue refuses. The
-    // exact depth is profile-dependent; what matters is that overflow surfaces
-    // as QUEUE_FULL rather than dropping silently (BR-2).
+    // Enqueue without servicing until QUEUE_FULL; the depth depends
+    // on the profile (BR-2).
     bool saw_full = false;
     std::size_t accepted = 0;
     for (int i = 0; i < 1000; ++i) {
@@ -341,7 +329,7 @@ TEST(Session, DiagnosticsHookReportsCommandTimeout) {
     EXPECT_EQ(observer.events[0], pico_sh2::DiagEvent::COMMAND_TIMEOUT);
 }
 
-// OR-2: a hub reset recognised while ready is reported through the hook.
+// A hub reset while ready reaches the diagnostics hook (OR-2).
 TEST(Session, DiagnosticsHookReportsAHubReset) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -356,7 +344,7 @@ TEST(Session, DiagnosticsHookReportsAHubReset) {
     EXPECT_EQ(observer.events[0], pico_sh2::DiagEvent::HUB_RESET);
 }
 
-// OR-2: an FRS operation passing its deadline is reported through the hook.
+// An FRS timeout reaches the diagnostics hook (OR-2).
 TEST(Session, DiagnosticsHookReportsAnFrsTimeout) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -373,7 +361,7 @@ TEST(Session, DiagnosticsHookReportsAnFrsTimeout) {
     EXPECT_EQ(observer.events[0], pico_sh2::DiagEvent::FRS_TIMEOUT);
 }
 
-// --- force flush (1000-3625 §6.5.6 / §6.5.7) --------------------------------
+// Force flush (1000-3625 §6.5.6 / §6.5.7).
 
 struct FlushCapture {
     std::vector<pico_sh2::reports::SensorId> sensors;
@@ -383,7 +371,7 @@ struct FlushCapture {
     }
 };
 
-// SR-6: the Force Sensor Flush request is emitted on the SH-2 control channel.
+// Force Sensor Flush is sent on the control channel (SR-6).
 TEST(Session, ForceFlushEmitsTheRequest) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -414,7 +402,7 @@ TEST(Session, ForceFlushBeforeReadyIsNotReady) {
     EXPECT_EQ(result.error(), Sh2Error::NOT_READY);
 }
 
-// SR-6: a Flush Completed report is routed to the flush sink.
+// Flush Completed reaches the flush sink (SR-6).
 TEST(Session, FlushCompletedReachesTheSink) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -435,9 +423,8 @@ TEST(Session, FlushCompletedReachesTheSink) {
     EXPECT_EQ(session.counters().flushes_completed, 1U);
 }
 
-// SR-6: the hub "may report data for other sensors as well", each with its own
-// Flush Completed (1000-3625 §6.5.7), so more than one can arrive for a single
-// request and every one of them reaches the sink.
+// The hub may flush other sensors too; every Flush Completed
+// reaches the sink (1000-3625 §6.5.7; SR-6).
 TEST(Session, EveryFlushCompletedIsDelivered) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -465,9 +452,8 @@ std::vector<std::uint8_t> cargo_of(
     return cargo;
 }
 
-// NR-4: a cargo from the hub may hold several reports, each as long as the
-// report-length table says (1000-3600 §2.3), and the control channel's are
-// split the same way as the input channels'.
+// Each report in a control cargo is split at its table length
+// and routed (1000-3600 §2.3; NR-4).
 TEST(Session, EveryReportInAControlCargoIsRouted) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -494,8 +480,8 @@ TEST(Session, EveryReportInAControlCargoIsRouted) {
     EXPECT_EQ(session.counters().unrouted_cargoes, 0U);
 }
 
-// NR-4: a report ID the table has no length for leaves no way to find the
-// next report, so the walk ends there, counted; what preceded it stands.
+// An unknown report length ends the walk and is counted;
+// earlier reports remain delivered (NR-4).
 TEST(Session, AnUnsizedReportEndsTheControlCargo) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -515,8 +501,7 @@ TEST(Session, AnUnsizedReportEndsTheControlCargo) {
     EXPECT_EQ(session.counters().unrouted_cargoes, 1U);
 }
 
-// NR-4, SR-1: the cargo carrying the unsolicited Initialize response is split
-// too, and a report after it is routed as a ready session's.
+// A report after Initialize in the same cargo is routed as ready (NR-4, SR-1).
 TEST(Session, AReportBatchedAfterTheInitializeResponseIsRouted) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -548,9 +533,7 @@ struct FlushRestarter {
     }
 };
 
-// NR-4: begin() from a sink ends the control cargo being walked, as it does an
-// input cargo: its remaining reports belong to the hub incarnation the call
-// restarted.
+// A sink calling begin() ends delivery from its control cargo (NR-4).
 TEST(Session, BeginFromASinkEndsTheControlCargo) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -570,8 +553,7 @@ TEST(Session, BeginFromASinkEndsTheControlCargo) {
     EXPECT_EQ(session.counters().unrouted_cargoes, 0U);
 }
 
-// NR-4, SR-1: an Initialize response that fails the handshake ends its cargo;
-// nothing after it is handled by a session that has faulted.
+// A failed Initialize ends delivery from its cargo (NR-4, SR-1).
 TEST(Session, AFailedInitializeEndsTheControlCargo) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -587,9 +569,8 @@ TEST(Session, AFailedInitializeEndsTheControlCargo) {
     EXPECT_EQ(session.counters().unrouted_cargoes, 0U);
 }
 
-// SR-1: a startup fault stays observable. Transfers the hub already offered in
-// the same pass must not carry the handshake on past it: a later Initialize
-// would set READY over a fault no consumer polling state() would then see.
+// Transfers later in the same pass must not advance startup
+// past a fault and hide it from the consumer (SR-1).
 TEST(Session, AFaultEndsTheServicePass) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -604,7 +585,7 @@ TEST(Session, AFaultEndsTheServicePass) {
     EXPECT_EQ(session.state(), pico_sh2::SessionState::FAULTED);
 }
 
-// SR-6: a Flush Completed too short to name a sensor is not delivered.
+// A Flush Completed without a sensor ID reaches no sink (SR-6).
 TEST(Session, AShortFlushCompletedIsAProtocolError) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -622,11 +603,8 @@ TEST(Session, AShortFlushCompletedIsAProtocolError) {
     EXPECT_EQ(session.counters().flushes_completed, 0U);
 }
 
-// A translation unit compiled with a different PICO_SH2_ACTIVE_PROFILE than the
-// library disagrees with it about the layout of Session and of everything
-// crossing this constructor. The consumer smoke's static_assert proves the
-// macro propagates; it cannot protect a consumer who overrides it, which is
-// what this check is for.
+// Construction aborts when the caller supplies a mismatched profile binding
+// (docs/architecture.md, Allocation).
 TEST(Session, MismatchedProfileBindingAborts) {
     FakeHub hub;
     pico_sh2::SessionBinding wrong = Session::caller_binding();
@@ -639,9 +617,8 @@ TEST(Session, MismatchedProfileBindingAborts) {
         "");
 }
 
-// The named knobs are not the only ones that move the layout, and a profile may
-// add more. session_size and session_align stand in for all of them, so a
-// disagreement none of the named fields would show still aborts.
+// A profile may change layout beyond its knobs; size and alignment mismatches
+// still abort (docs/architecture.md, Allocation).
 TEST(Session, ProfileBindingDetectsLayoutDrift) {
     FakeHub hub;
     pico_sh2::SessionBinding wrong = Session::caller_binding();
@@ -663,9 +640,8 @@ TEST(Session, ProfileBindingDetectsLayoutDrift) {
         "");
 }
 
-// MAX_ENABLED_SENSORS sizes nothing in Session -- a driver built on this
-// library sizes its own table from it -- so the size comparison cannot see a
-// disagreement about it. It is reported separately for exactly that reason.
+// MAX_ENABLED_SENSORS sizes no Session member, so size alone cannot
+// detect its mismatch (docs/architecture.md, Allocation).
 TEST(Session, ProfileBindingCatchesAKnobThatSizesNothingHere) {
     FakeHub hub;
     pico_sh2::SessionBinding wrong = Session::caller_binding();
@@ -686,8 +662,8 @@ TEST(Session, MatchingProfileBindingConstructs) {
     EXPECT_EQ(session.state(), pico_sh2::SessionState::IDLE);
 }
 
-// SR-2: a command request carries COMMAND_MAX_PARAMS parameter bytes. A longer
-// block is refused whole rather than sent with its tail cut off.
+// More than COMMAND_MAX_PARAMS returns INVALID_ARGUMENT and sends nothing
+// (SR-2).
 TEST(Session, SendCommandRefusesMoreParametersThanARequestCarries) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -708,8 +684,8 @@ TEST(Session, SendCommandRefusesMoreParametersThanARequestCarries) {
         session.send_command(pico_sh2::command::ME_CALIBRATION, exactly).ok());
 }
 
-// OR-1, OR-2: a frame the transport refuses is counted and reported, and stays
-// queued for the next pass rather than being lost.
+// A transport write error is counted and reported; the frame
+// stays queued for retry on the next pass (OR-1, OR-2).
 TEST(Session, ARefusedWriteIsCountedReportedAndRetried) {
     FakeHub hub;
     Session session = make_session(hub);

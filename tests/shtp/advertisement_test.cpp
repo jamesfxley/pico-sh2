@@ -20,9 +20,7 @@ using pico_sh2::Sh2Error;
 using pico_sh2::shtp::parse_advertisement;
 using pico_sh2::shtp::ReportLengthSink;
 
-// Collects the (report ID, length) pairs the parser emits. The advertisement is
-// authoritative and a later pair overrides an earlier one, so lookups report
-// the last value seen for an ID.
+// Collects emitted pairs, keeping the last length for each report ID.
 class Collector {
    public:
     ReportLengthSink sink() {
@@ -50,7 +48,7 @@ class Collector {
     std::vector<std::pair<std::uint8_t, std::uint8_t>> pairs_;
 };
 
-// NR-4: tag-0x81 pairs under a sensorhub GUID are emitted in wire order.
+// Sensorhub tag-0x81 pairs are emitted in wire order (NR-4).
 TEST(Advertisement, EmitsReportLengthPairs) {
     // GUID 2 (sensorhub) opens application scope, then tag 0x81, length 4, two
     // (id, length) pairs.
@@ -64,8 +62,8 @@ TEST(Advertisement, EmitsReportLengthPairs) {
     EXPECT_EQ(collector.length_of(0x08).value_or(0), 0x0C);
 }
 
-// NR-4: under the SHTP application (GUID 0), tag 0x81 is the UART-timeout value
-// rather than report lengths (1000-3535 §5.3), so nothing is emitted.
+// SHTP tag 0x81 is a UART timeout and emits no report lengths
+// (1000-3535 §5.3; NR-4).
 TEST(Advertisement, IgnoresShtpApplicationTag81) {
     std::array<std::uint8_t, 7> cargo{0x01, 0x01, 0x00, 0x81, 0x02, 0x05, 0x0E};
     Collector collector;
@@ -75,8 +73,8 @@ TEST(Advertisement, IgnoresShtpApplicationTag81) {
     EXPECT_EQ(collector.count(), 0U);
 }
 
-// NR-4: scope tracks the nearest preceding GUID, so the SHTP 0x81 is suppressed
-// and the sensorhub 0x81 that follows is emitted.
+// The nearest GUID scopes tag 0x81: SHTP emits nothing; sensorhub emits lengths
+// (NR-4).
 TEST(Advertisement, EmitsTag81OnlyAfterTheSensorhubGuid) {
     std::array<std::uint8_t, 14> cargo{
         0x01, 0x01, 0x00,        // GUID 0 (SHTP)
@@ -91,10 +89,8 @@ TEST(Advertisement, EmitsTag81OnlyAfterTheSensorhubGuid) {
     EXPECT_EQ(collector.length_of(0x05).value_or(0), 0x18);
 }
 
-// NR-4: tags 0x80-0xFF are defined by each application (1000-3535 §5.2), so
-// 0x81 is the report-length list only in the sensorhub's scope. Under the
-// executable or a vendor application it means something else and emits
-// nothing.
+// Executable and vendor tag 0x81 emit no report lengths
+// (1000-3535 §5.2; NR-4).
 TEST(Advertisement, Tag81OutsideTheSensorhubEmitsNothing) {
     std::array<std::uint8_t, 17> cargo{
         0x01, 0x01, 0x01,                    // GUID 1 (executable)
@@ -109,8 +105,7 @@ TEST(Advertisement, Tag81OutsideTheSensorhubEmitsNothing) {
     EXPECT_EQ(collector.count(), 0U);
 }
 
-// NR-4: an unknown or vendor tag is skipped by its length and never breaks the
-// walk.
+// Unknown and vendor tags are skipped by length without ending the walk (NR-4).
 TEST(Advertisement, SkipsUnknownTags) {
     // Sensorhub GUID (tag 1, len 4), AppName (tag 8, len 3), then
     // ReportLengths.
@@ -132,7 +127,7 @@ TEST(Advertisement, EmptyCargoEmitsNothing) {
     EXPECT_EQ(applied.value(), 0U);
 }
 
-// NR-4: a TLV entry running past the end of the cargo is malformed.
+// A TLV overrunning the cargo is malformed (NR-4).
 TEST(Advertisement, RejectsTruncatedValue) {
     // tag 0x81 claims length 6 but only 2 value bytes are present.
     std::array<std::uint8_t, 4> cargo{0x81, 0x06, 0x05, 0x0E};
@@ -158,8 +153,7 @@ TEST(Advertisement, RejectsOddReportLengthArray) {
               Sh2Error::PROTOCOL);
 }
 
-// An unset sink is a no-op, so a caller that only wants the pair count (or the
-// malformed-entry check) need not bind one.
+// An unset sink still allows counting pairs and checking malformed entries.
 TEST(Advertisement, UnsetSinkStillCounts) {
     std::array<std::uint8_t, 9> cargo{0x01, 0x01, 0x02, 0x81, 0x04,
                                       0x05, 0x0E, 0x08, 0x0C};
@@ -168,7 +162,7 @@ TEST(Advertisement, UnsetSinkStillCounts) {
     EXPECT_EQ(applied.value(), 2U);
 }
 
-// --- channel assignments (1000-3535 §5.2) ---
+// Channel assignments (1000-3535 §5.2).
 
 struct ChannelCollector {
     struct Seen {
@@ -195,8 +189,8 @@ struct ChannelCollector {
     }
 };
 
-// SR-10: a channel tag gives the number and the ChannelName that follows names
-// it, both scoped to the preceding GUID.
+// Channel tags supply numbers; each following name belongs to that channel
+// under the current GUID (SR-10).
 TEST(Advertisement, EmitsChannelsWithTheirGuidAndName) {
     // GUID 1, NormalChannel 3, ChannelName "device".
     std::array<std::uint8_t, 18> cargo{
@@ -227,10 +221,8 @@ TEST(Advertisement, MarksWakeChannels) {
     EXPECT_TRUE(channels.channels[0].name.empty());
 }
 
-// The name that matters is the one under the right GUID: the SHTP application
-// and the SH-2 sensorhub both advertise a channel called "control", so an
-// emitted channel carries the GUID that disambiguates them. Observed on a real
-// BNO085, whose channel 0 is SHTP's "control" and channel 2 the sensorhub's.
+// Equal channel names under different GUIDs remain distinct.
+// The fixture names both SHTP and sensorhub channels "control".
 TEST(Advertisement, TheSameNameUnderTwoGuidsIsTwoChannels) {
     std::vector<std::uint8_t> cargo{
         0x01, 0x04, 0x00, 0x00, 0x00, 0x00,  // GUID 0 (SHTP)
@@ -252,8 +244,8 @@ TEST(Advertisement, TheSameNameUnderTwoGuidsIsTwoChannels) {
     EXPECT_EQ(channels.channels[0].name, channels.channels[1].name);
 }
 
-// A ChannelName only names the channel tag immediately before it (1000-3535
-// §5.2), so one separated by another tag names nothing.
+// A name separated from its channel tag by another tag names nothing
+// (1000-3535 §5.2).
 TEST(Advertisement, AChannelNameMustFollowItsChannelTag) {
     std::vector<std::uint8_t> cargo{
         0x06, 0x01, 0x03,             // NormalChannel 3
@@ -268,8 +260,7 @@ TEST(Advertisement, AChannelNameMustFollowItsChannelTag) {
     EXPECT_TRUE(channels.channels[0].name.empty());
 }
 
-// A channel advertised last in the cargo has no following tag to end it, and
-// must still be emitted.
+// A channel at the end of the cargo must still be emitted.
 TEST(Advertisement, EmitsAChannelThatEndsTheCargo) {
     std::array<std::uint8_t, 12> cargo{0x06, 0x01, 0x05, 0x09, 0x03, 'r',
                                        'v',  0x00, 0x00, 0x00, 0x00, 0x00};
@@ -285,8 +276,8 @@ TEST(Advertisement, EmitsAChannelThatEndsTheCargo) {
 }
 
 TEST(Advertisement, DoesNotOverrunOnAdversarialLengths) {
-    // Every one-byte prefix of a plausible advertisement must be rejected or
-    // parsed, never read out of bounds (ASan/UBSan guard this).
+    // Each one-byte prefix must parse or fail without an out-of-bounds read
+    // (checked by ASan/UBSan).
     std::vector<std::uint8_t> full{0x01, 0x04, 0xDE, 0xAD, 0xBE,
                                    0xEF, 0x81, 0x02, 0x05, 0x0E};
     for (std::size_t entry = 0; entry <= full.size(); ++entry) {
@@ -297,10 +288,8 @@ TEST(Advertisement, DoesNotOverrunOnAdversarialLengths) {
     SUCCEED();
 }
 
-// SR-10: a GUID is at most four bytes -- this library's limit, UNCONFIRMED
-// (FW-5) against 1000-3535 §5.2 (NR-4). A longer value names no application the
-// roles could be bound to, and parsing it would shift past the width of the
-// GUID.
+// GUIDs over four bytes are rejected to avoid a shift past their width
+// (SR-10, NR-4). The limit is UNCONFIRMED against 1000-3535 §5.2 (FW-5).
 TEST(Advertisement, RejectsAGuidLongerThanFourBytes) {
     std::array<std::uint8_t, 7> cargo{0x01, 0x05, 0x02, 0x00, 0x00, 0x00, 0x07};
     Collector collector;

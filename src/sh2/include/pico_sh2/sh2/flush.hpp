@@ -2,11 +2,7 @@
 #pragma once
 
 /// \file flush.hpp
-/// Force Sensor Flush (0xF0) and Flush Completed (0xEF): asking the hub to send
-/// a sensor's outstanding batched data now, and being told when it has.
-///
-/// SH-2 Reference Manual §6.5.6 and §6.5.7. Both reports are two bytes, the
-/// report ID followed by the sensor ID.
+/// Force Sensor Flush and Flush Completed reports (1000-3625 §6.5.6, §6.5.7).
 
 #include <array>
 #include <cstddef>
@@ -29,7 +25,7 @@ inline constexpr std::size_t FLUSH_REPORT_SIZE = 2;
 /// Byte offset of the sensor ID within either report.
 inline constexpr std::size_t FLUSH_SENSOR_ID = 1;
 
-/// Serialize a Force Sensor Flush for `sensor`.
+/// Serialise a Force Sensor Flush for `sensor`.
 inline std::array<std::uint8_t, FLUSH_REPORT_SIZE> serialize_force_flush(
     reports::SensorId sensor) {
     return {FORCE_FLUSH_REQUEST, static_cast<std::uint8_t>(sensor)};

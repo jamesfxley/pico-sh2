@@ -2,13 +2,8 @@
 #pragma once
 
 /// \file profile.hpp
-/// Compile-time sizing profile. Every static buffer and fixed-capacity array in
-/// the session is sized from the active profile struct, and the static_asserts
-/// at the bottom bind those sizes to protocol invariants so a mis-set knob is a
-/// compile error rather than a runtime overflow. The active profile is selected
-/// by the PICO_SH2_ACTIVE_PROFILE macro (set by the build's PICO_SH2_PROFILE
-/// cache variable, or by the header PICO_SH2_PROFILE_HEADER names); it
-/// defaults to DefaultProfile.
+/// Compile-time buffer sizes, checked against protocol bounds.
+/// PICO_SH2_ACTIVE_PROFILE selects the type; DefaultProfile is the default.
 
 #include <concepts>
 #include <cstddef>
@@ -18,13 +13,9 @@
 
 namespace pico_sh2 {
 
-/// Protocol-derived minimums the profile knobs are checked against. Named so
-/// the static_asserts read by intent and so the wire facts have a single home;
-/// the SHTP header size comes from shtp::HEADER_SIZE.
-///
-/// A minimal SHTP transfer is a header plus a one-byte cargo, with margin.
+/// Minimum receive-transfer capacity in bytes, including header and margin.
 inline constexpr std::size_t MIN_RX_TRANSFER = 32;
-/// Largest host->hub cargo is Set Feature: 17-byte payload + 4-byte header.
+/// Set Feature capacity bound in bytes, including the four-byte header.
 inline constexpr std::size_t SET_FEATURE_CARGO_SIZE = 21;
 /// Upper bound on concurrently enabled sensors any profile may request.
 inline constexpr std::size_t MAX_ENABLED_SENSORS_CEILING = 64;
@@ -35,26 +26,13 @@ inline constexpr std::size_t FRS_USER_RECORD_WORDS = 64;
 /// write data's offset are 16-bit word counts (1000-3625 §6.3.3, §6.3.4).
 inline constexpr std::size_t FRS_MAX_RECORD_WORDS = 0xFFFF;
 
-/// The reassembly buffer must at least hold the largest cargo this library
-/// itself builds. Nothing in SHTP bounds it above that: a hub's advertisement
-/// is typically far larger (a few hundred bytes) and its size is a property of
-/// the part, so sizing a profile to receive one is the consumer's call. An
-/// undersized buffer is not a correctness fault — an oversize cargo is dropped
-/// whole and counted (BR-1) — but a hub whose advertisement does not fit will
-/// never be routed, because the session cannot learn its channels.
+/// Minimum reassembly capacity in bytes; must hold the largest outgoing cargo
+/// (AR-5).
 inline constexpr std::size_t MIN_CARGO_LEN = SET_FEATURE_CARGO_SIZE;
 
-/// The compile-time interface a sizing profile must supply (AR-5).
-///
-/// Stating it as a concept turns a mis-specified downstream profile into one
-/// diagnostic naming the missing knob, rather than a wall of substitution
-/// failures inside FrsEngine or the TX path -- which is where a profile without
-/// `FRS_MAX_WORDS` currently fails, several headers away from the mistake.
-///
-/// Each knob must be a `std::size_t` itself, not merely convert to one: a
-/// signed knob of -1 would convert to the largest size and pass every lower
-/// bound the profile invariants check. A static data member named in a
-/// requires-expression is an lvalue, hence `const std::size_t&`.
+/// The interface a sizing profile must supply (AR-5).
+/// Each knob must be std::size_t; signed negatives could pass lower bounds.
+/// A static member is an lvalue in requires, hence const std::size_t&.
 template <typename P>
 concept Sh2Profile = requires {
     { P::MAX_RX_TRANSFER_LEN } -> std::same_as<const std::size_t&>;
@@ -69,49 +47,30 @@ concept Sh2Profile = requires {
 
 /// A single-IMU host driving a handful of sensors.
 struct DefaultProfile {
-    /// Largest single transfer staged from the HAL. Must hold the header plus a
-    /// typical hub transfer; the advertisement fits so it is read in one shot
-    /// on the fast path. Partial reads are legal, so this bounds a transfer,
-    /// not correctness.
+    /// Receive-transfer capacity in bytes.
     static constexpr std::size_t MAX_RX_TRANSFER_LEN = 288;
-    /// Largest reassembled cargo. Must hold the hub's advertisement, which is
-    /// the largest cargo the handshake depends on; batched input cargoes are
-    /// capped by configuration (see spec), and an oversize cargo is dropped
-    /// whole rather than truncated.
+    /// Reassembly capacity in bytes.
     static constexpr std::size_t MAX_CARGO_LEN = 384;
-    /// Largest host->hub cargo payload. Set Feature is 17 B; add headroom.
+    /// Outbound payload capacity in bytes, with headroom above Set Feature.
     static constexpr std::size_t MAX_TX_CARGO = 32;
-    /// Outbound cargo queue depth. Counted, not masked, so any value >= 2
-    /// works.
+    /// Outbound queue capacity in cargoes; any depth of at least two works.
     static constexpr std::size_t TX_QUEUE_DEPTH = 4;
-    /// Concurrently enabled sensors. Nothing here is sized by it: a driver
-    /// built on this library sizes its desired-sensor table from it, so the
-    /// forwarded profile scales the driver and the session together.
+    /// Consumer enabled-sensor capacity; it does not size Session.
     static constexpr std::size_t MAX_ENABLED_SENSORS = 8;
     /// Largest FRS record (32-bit words) buffered for a read or write.
     static constexpr std::size_t FRS_MAX_WORDS = 64;
-    /// Transfers drained from the HAL in one service() call. The bound is what
-    /// stops a hub asserting data-ready continuously from holding the caller's
-    /// context indefinitely; the remainder is drained on the next call, so this
-    /// bounds latency rather than throughput.
+    /// Maximum transfers per service() call; remaining input waits for the next
+    /// call.
     static constexpr std::size_t MAX_TRANSFERS_PER_SERVICE = 64;
-    /// Ceiling on sizeof(Session), asserted where the class is defined. Bounds
-    /// the whole session in one number so a new member cannot grow it
-    /// unnoticed. Sized for a 64-bit host, where pointers are twice the
-    /// target's, so a firmware build sits comfortably under it.
+    /// Maximum sizeof(Session) in bytes, including 64-bit host pointers.
     static constexpr std::size_t SESSION_SIZE_CEILING = 2304;
 };
 
-/// Wider buffers for hubs advertising larger cargoes or many enabled sensors.
-///
-/// Inherits rather than restating: `MAX_TX_CARGO` is the same here, and an
-/// eighth knob added to DefaultProfile reaches this profile instead of silently
-/// leaving it behind at whatever the default was when this struct was written.
-/// Every member below is one this profile genuinely changes.
+/// Larger capacities, inheriting unchanged and newly added defaults.
 struct LargeProfile : DefaultProfile {
-    /// Largest single transfer staged from the HAL.
+    /// Receive-transfer capacity in bytes.
     static constexpr std::size_t MAX_RX_TRANSFER_LEN = 640;
-    /// Largest reassembled cargo.
+    /// Reassembly capacity in bytes.
     static constexpr std::size_t MAX_CARGO_LEN = 1024;
     /// Outbound cargo queue depth.
     static constexpr std::size_t TX_QUEUE_DEPTH = 8;
@@ -119,20 +78,14 @@ struct LargeProfile : DefaultProfile {
     static constexpr std::size_t MAX_ENABLED_SENSORS = 16;
     /// Largest FRS record (32-bit words) buffered for a read or write.
     static constexpr std::size_t FRS_MAX_WORDS = 128;
-    /// Ceiling on sizeof(Session), asserted where the class is defined.
+    /// Maximum sizeof(Session) in bytes.
     static constexpr std::size_t SESSION_SIZE_CEILING = 3840;
 };
 
 static_assert(Sh2Profile<DefaultProfile>);
 static_assert(Sh2Profile<LargeProfile>);
 
-/// AR-5's range for each knob of a profile, one named bound apiece.
-///
-/// Public so the bounds can be tested on profiles at and past each one, which
-/// the static_asserts on the active profile cannot be: a profile outside a
-/// bound does not compile. The asserts below read these, so a bound deleted
-/// here is one no profile is held to, and one a test sees go.
-///
+/// Named profile bounds, exposed for tests of invalid profiles (AR-5).
 /// \tparam P the profile to check.
 template <Sh2Profile P>
 struct ProfileBounds {
@@ -161,10 +114,8 @@ struct ProfileBounds {
     /// At least one transfer is admitted per service().
     static constexpr bool TRANSFERS_PER_SERVICE =
         P::MAX_TRANSFERS_PER_SERVICE >= 1;
-    /// The storage the profile's own knobs demand of a Session, in bytes: the
-    /// two staged buffers, the FRS record and one coverage bit per record word.
-    /// Every other member is a pointer, a callback or a small engine, and none
-    /// of them scales with the profile.
+    /// Minimum storage in bytes for staging, reassembly, FRS words and coverage
+    /// bits.
     static constexpr std::size_t BUFFER_BYTES =
         P::MAX_RX_TRANSFER_LEN + P::MAX_CARGO_LEN +
         (P::FRS_MAX_WORDS * sizeof(std::uint32_t)) +
@@ -181,9 +132,8 @@ struct ProfileBounds {
 
 }  // namespace pico_sh2
 
-// A consumer's own profile (AR-5): the build's PICO_SH2_PROFILE_HEADER names a
-// header that defines a profile type -- after DefaultProfile, so it may inherit
-// from it -- and defines PICO_SH2_ACTIVE_PROFILE to name that type.
+// A custom profile follows DefaultProfile so it may inherit from it;
+// the header defines its type and PICO_SH2_ACTIVE_PROFILE (AR-5).
 #ifdef PICO_SH2_PROFILE_HEADER
 #include PICO_SH2_PROFILE_HEADER
 #endif
@@ -199,15 +149,12 @@ namespace pico_sh2 {
 /// The profile PICO_SH2_ACTIVE_PROFILE selected, named as a type.
 using ActiveProfile = PICO_SH2_ACTIVE_PROFILE;
 
-// A downstream profile reaches the library through this alias, so this is where
-// the concept has to hold. Checked here rather than at each use so the
-// diagnostic names the profile rather than the buffer that tried to use it.
+// This check diagnoses missing profile knobs before buffer use.
 static_assert(Sh2Profile<ActiveProfile>,
               "PICO_SH2_ACTIVE_PROFILE must name a type satisfying Sh2Profile: "
               "see the knob table in docs/technical-specification.md");
 
-/// The static_asserts binding the active profile's knobs to protocol
-/// invariants, so a mis-set knob fails the build rather than the device.
+/// Compile-time checks of active-profile bounds.
 namespace profile_invariants {
 /// The active profile's bounds, which every assert below reads.
 using Bounds = ProfileBounds<ActiveProfile>;
@@ -218,9 +165,7 @@ static_assert(Bounds::RX_TRANSFER_MIN,
 static_assert(Bounds::RX_TRANSFER_MAX,
               "a single transfer cannot exceed one cargo plus header");
 static_assert(Bounds::TX_CARGO, "MAX_TX_CARGO must hold a Set Feature cargo");
-// No power-of-two requirement. The outbound ring counts its elements rather
-// than masking an index, so any depth works and TX_QUEUE_DEPTH is simply the
-// number of cargoes that can be staged at once.
+// The ring counts elements, so the depth need not be a power of two.
 static_assert(Bounds::TX_QUEUE,
               "TX_QUEUE_DEPTH must hold at least two cargoes");
 static_assert(Bounds::ENABLED_SENSORS,
@@ -232,17 +177,13 @@ static_assert(Bounds::FRS_WORDS_MAX,
               "the request's length and offset would truncate");
 static_assert(Bounds::TRANSFERS_PER_SERVICE,
               "MAX_TRANSFERS_PER_SERVICE must admit at least one transfer");
-// Every bound has its own assert above, for its message; this one is what a
-// bound added to ProfileBounds::ALL without an assert of its own still meets.
+// This catches bounds added to ALL without an individual assertion.
 static_assert(Bounds::ALL, "the active profile is outside AR-5's ranges");
 
 /// The storage the active profile's knobs demand of a Session, in bytes.
 inline constexpr std::size_t PROFILE_BUFFER_BYTES = Bounds::BUFFER_BYTES;
 
-// The ceiling's own bound. A ceiling below the buffers the same
-// profile asks for cannot ever be met, so the assert at the bottom of
-// session.hpp would fire with a message about Session's size when the mistake
-// is in the profile. This says where it is.
+// This diagnoses an impossible profile ceiling before Session's size check.
 static_assert(Bounds::SESSION_CEILING,
               "SESSION_SIZE_CEILING is below the buffers this profile's own "
               "knobs require; raise the ceiling or lower the buffers");

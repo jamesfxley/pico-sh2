@@ -109,32 +109,26 @@ Result<void> ShtpEngine::ingest_lead(const ShtpHeader& header,
         count_drop(active_channel_);
         drop_in_progress();
     }
-    // The lead header's length field is the total cargo length; completion is
-    // by accumulation to it, not by a short final transfer. Continuation
-    // headers' length fields are not consulted for completion.
+    // Completion uses the lead's total length; continuation length fields do
+    // not set the completion boundary.
     const std::size_t expected = header.cargo_length();
     if (expected > buffer_.size()) {
-        // Oversize cargo: drop whole rather than overflow the buffer.
+        // An oversize cargo is dropped whole.
         count_drop(header.channel);
         return Sh2Error::REASSEMBLY_DROP;
     }
     if (payload.size() >= expected) {
-        // Fast path (AR-2): the whole cargo arrived in this single transfer,
-        // so deliver it in place from the caller's buffer. Only a
-        // continuation-fragmented cargo is copied into the reassembly buffer.
+        // Deliver single-transfer cargo in place; only fragmented cargo is
+        // copied (AR-2).
         ++stats_.cargoes_delivered;
-        // The channel is carried as the byte the hub sent. One that no
-        // application claimed reaches the consumer and is counted as unrouted
-        // rather than guessed at.
+        // Preserve the wire channel so the session can count unrouted cargoes.
         sink_(Cargo{.channel = header.channel,
                     .sequence = header.sequence,
                     .lead_edge_us = edge_us,
                     .payload = payload.first(expected)});
         return Result<void>{};
     }
-    // Fragmented: begin accumulating the remainder into the reassembly buffer
-    // across the continuation transfers that follow. The lead transfer's edge
-    // times the whole cargo (1000-3535 §2.6).
+    // The lead edge times the whole fragmented cargo (1000-3535 §2.6).
     expected_ = expected;
     in_progress_ = true;
     assembled_ = 0;
@@ -146,8 +140,7 @@ Result<void> ShtpEngine::ingest_lead(const ShtpHeader& header,
 }
 
 void ShtpEngine::append(std::span<const std::uint8_t> payload) {
-    // Clamp to what the lead header promised and to the buffer; a continuation
-    // claiming more than expected cannot be trusted to overrun.
+    // Ignore bytes beyond the lead's declared cargo length.
     const std::size_t take = std::min(payload.size(), expected_ - assembled_);
     std::copy_n(payload.data(), take, buffer_.data() + assembled_);
     assembled_ += take;
@@ -169,8 +162,7 @@ Result<std::size_t> ShtpEngine::frame_outbound(
     std::span<std::uint8_t> out) {
     const std::size_t transfer_length = payload.size() + HEADER_SIZE;
     if (transfer_length > out.size()) {
-        // This library does not fragment writes; a cargo exceeding one transfer
-        // is rejected rather than fragmented.
+        // Writes are unfragmented.
         return Sh2Error::CARGO_TOO_LARGE;
     }
     const std::uint8_t index = channel;

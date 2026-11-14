@@ -10,8 +10,7 @@
 namespace pico_sh2::reports {
 namespace {
 
-// The prefix is taken as its four bytes in wire order, so there is no argument
-// order to get wrong: four loose bytes, in any order, do not compile.
+// Prefix bytes are passed in wire order; four loose bytes do not compile.
 template <typename... Bytes>
 concept DecodesLooseBytes =
     requires(Bytes... bytes) { decode_prefix(bytes...); };

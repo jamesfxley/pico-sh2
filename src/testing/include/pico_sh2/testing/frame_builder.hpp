@@ -2,16 +2,7 @@
 #pragma once
 
 /// \file frame_builder.hpp
-/// Wire-format builders for tests: raw SHTP frames and the control-channel
-/// reports the startup handshake is made of.
-///
-/// Every suite that drives the stack needs these, and hand-rolling the header
-/// arithmetic in each one is how a test ends up asserting against its own
-/// mistake rather than against the protocol. They live here so there is one
-/// definition of what a frame looks like on the wire.
-///
-/// Test-support code: it uses the heap freely (the zero-post-init-heap rule
-/// governs the library on-device, not the fakes).
+/// Shared wire-format builders for host tests; heap allocation is allowed here.
 
 #include <cstddef>
 #include <cstdint>
@@ -31,18 +22,12 @@
 
 namespace pico_sh2::testing {
 
-/// One raw SHTP transfer: the 4-byte header (length includes the header, bit 15
-/// of the length is the continuation flag) followed by `payload`.
-///
-/// Precondition: `payload.size() + HEADER_SIZE <= LENGTH_MASK`, the most the
-/// header's 15-bit length can say. A longer payload aborts rather than build a
-/// frame whose header disagrees with its body.
+/// SHTP header and payload; bit 15 marks continuation.
+/// A total length beyond LENGTH_MASK aborts.
 inline std::vector<std::uint8_t> frame(std::uint8_t channel, std::uint8_t seq,
                                        std::span<const std::uint8_t> payload,
                                        bool continuation = false) {
     const std::size_t total = payload.size() + shtp::HEADER_SIZE;
-    // The header's length field is 15 bits; a longer frame would encode a
-    // length its body disagrees with, so it is refused rather than built.
     if (total > shtp::LENGTH_MASK) {
         std::abort();
     }
@@ -50,17 +35,15 @@ inline std::vector<std::uint8_t> frame(std::uint8_t channel, std::uint8_t seq,
     if (continuation) {
         high = static_cast<std::uint8_t>(high | 0x80U);
     }
-    // Built from the header bytes, rather than reserved and appended to: GCC
-    // 15 at -O3 reports a false -Wfree-nonheap-object from push_back's
-    // reallocation path even after reserve().
+    // Constructing the header directly avoids GCC 15 -O3's false
+    // -Wfree-nonheap-object in push_back reallocation after reserve().
     std::vector<std::uint8_t> out{static_cast<std::uint8_t>(total & 0xFFU),
                                   high, channel, seq};
     out.insert(out.end(), payload.begin(), payload.end());
     return out;
 }
 
-/// A braced payload does not deduce to a span, and spelling out a vector at
-/// every call site is what pushed tests into hand-rolling the header instead.
+/// Braced-payload overload; a braced list does not deduce to a span.
 inline std::vector<std::uint8_t> frame(
     std::uint8_t channel, std::uint8_t seq,
     std::initializer_list<std::uint8_t> payload, bool continuation = false) {
@@ -94,14 +77,9 @@ inline void append_guid(std::vector<std::uint8_t>& out, std::uint8_t guid) {
     append_tlv(out, shtp::GUID_TAG, {guid, 0x00, 0x00, 0x00});
 }
 
-/// A channel advertisement in the shape 1000-3600 §2.3 defines, as the
-/// Response-0 cargo it arrives in on channel 0: the SHTP
-/// application (GUID 0) naming the command channel, the executable application
-/// (GUID 1) naming `device`, and the sensorhub (GUID 2) naming control,
-/// inputNormal, inputWake and inputGyroRv. SH-2's five sit at N..N+4 for a
-/// hub-chosen N, so `base` is that N — a test can move the whole block and the
-/// session must follow it. One tag-0x81 report-length pair closes the sensorhub
-/// scope so a test can observe that lengths were applied too.
+/// Response-0 advertisement with channels at base (1000-3600 §2.3).
+/// The session must follow a shifted base; one report-length pair checks
+/// application.
 inline std::vector<std::uint8_t> advertisement(std::uint8_t report_id = 0x05,
                                                std::uint8_t length = 0x18,
                                                std::uint8_t base = 1) {
@@ -137,8 +115,7 @@ inline std::vector<std::uint8_t> advertisement(std::uint8_t report_id = 0x05,
     return out;
 }
 
-/// The channel numbers `advertisement(.., base)` assigns, for a test that has
-/// to address one directly.
+/// Device channel assigned by advertisement(..., base).
 constexpr std::uint8_t device_channel(std::uint8_t base = 1) { return base; }
 
 /// \param base the first channel number the advertisement assigns.
@@ -165,8 +142,7 @@ constexpr std::uint8_t input_gyro_rv_channel(std::uint8_t base = 1) {
     return static_cast<std::uint8_t>(base + 4);
 }
 
-/// The channel map a consumer seeds for a hub laid out at `base`, so a reset
-/// can be requested before the hub has advertised (SR-7).
+/// Channel seeds at base for reset before advertisement (SR-7).
 inline shtp::ChannelMap seeded_channels(std::uint8_t base = 1) {
     shtp::ChannelMap map;
     map.seed(shtp::ChannelRole::DEVICE, device_channel(base));
@@ -180,8 +156,7 @@ inline shtp::ChannelMap seeded_channels(std::uint8_t base = 1) {
 /// The device channel's reset-complete cargo (1000-3600 §2.2).
 inline std::vector<std::uint8_t> reset_complete() { return {0x01}; }
 
-/// A command response (0xF1). `command_sequence` echoes the request's sequence;
-/// an unsolicited response sets the MSB of the command byte.
+/// Response echoing command_sequence; unsolicited sets the command MSB.
 inline std::vector<std::uint8_t> command_response(std::uint8_t command,
                                                   std::uint8_t command_sequence,
                                                   bool unsolicited) {
@@ -195,8 +170,7 @@ inline std::vector<std::uint8_t> command_response(std::uint8_t command,
     return frame;
 }
 
-/// The unsolicited Initialize response that ends the handshake: 0xF1 with
-/// command byte 0x84 and R0 carrying the status (SH-2 Reference Manual §6.4.4).
+/// Unsolicited Initialize with R0 status (1000-3625 §6.4.4).
 inline std::vector<std::uint8_t> initialize_response(std::uint8_t status = 0) {
     std::vector<std::uint8_t> frame =
         command_response(command::INITIALIZE, 0, true);
@@ -214,9 +188,7 @@ inline std::vector<std::uint8_t> feature_response(
     return frame;
 }
 
-/// An FRS Read Response (0xF3) for record `frs_type`, carrying `data_words`
-/// words (0-2) from record word `first_word`, with the 4-bit `status` sharing
-/// byte 1 with the word count.
+/// Read response with 0–2 words at first_word and status in byte 1.
 inline std::vector<std::uint8_t> frs_read_response(
     std::uint16_t frs_type, std::uint8_t status, std::uint8_t data_words,
     std::uint16_t first_word, std::uint32_t word0, std::uint32_t word1) {

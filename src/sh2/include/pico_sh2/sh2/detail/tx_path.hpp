@@ -2,16 +2,9 @@
 #pragma once
 
 /// \file tx_path.hpp
-/// Outbound path: the queue a consumer's requests are staged in and the flush
-/// that frames them and hands them to the HAL.
-///
-/// Requests arrive from consumer calls at any time, but every bus access
-/// happens inside service() (AR-3), so a request is queued when it is made and
-/// written on the next service() pass. The queue and its framing scratch are
-/// sized from the active profile and allocate nothing (AR-1); a request that
-/// does not fit is refused so the caller sees the failure (BR-2).
-///
-/// This is an internal collaborator of Session, not public API.
+/// Internal outbound queue; bus access waits for service() (AR-3).
+/// Profile-sized storage allocates nothing (AR-1).
+/// Requests that do not fit return an error (BR-2).
 
 #include <algorithm>
 #include <array>
@@ -29,10 +22,7 @@
 
 namespace pico_sh2::detail {
 
-/// One staged cargo: the channel to send it on and its payload bytes.
-///
-/// Layer-independent by construction -- the channel is its raw wire number, so
-/// nothing here depends on the SHTP or SH-2 layers.
+/// Queued payload with its raw wire channel number.
 struct TxCargo {
     std::uint8_t channel = 0;  ///< Raw SHTP channel number.
     std::size_t length = 0;    ///< Payload bytes in use within `bytes`.
@@ -42,17 +32,13 @@ struct TxCargo {
 
 class TxPath {
    public:
-    /// The map that turns a role into a wire number. Bound once by the session
-    /// that owns both; until then, and for any role the hub has not advertised
-    /// and no consumer seeded, a role-addressed enqueue has nowhere to go.
+    /// Borrow the session's role-to-channel map; it outlives this path.
     void bind_channels(const shtp::ChannelMap& channels) {
         channels_ = &channels;
     }
 
-    /// Stage one cargo for the channel playing `role`. NOT_READY when that role
-    /// has no number yet — the hub has not advertised it and the consumer did
-    /// not seed it — which is a different failure from a full queue and has a
-    /// different remedy.
+    /// Queue by role; NOT_READY means no map or neither a learned nor seeded
+    /// number.
     Result<void> enqueue(shtp::ChannelRole role,
                          std::span<const std::uint8_t> payload) {
         if (channels_ == nullptr) {
@@ -73,9 +59,7 @@ class TxPath {
         if (payload.size() > ActiveProfile::MAX_TX_CARGO) {
             return Sh2Error::QUEUE_FULL;
         }
-        // acquire()/commit() rather than push(): the payload is copied straight
-        // into the ring's slot, so a cargo is never staged through a temporary
-        // the size of the profile's largest.
+        // Copying directly into the ring avoids a maximum-sized temporary.
         TxCargo* slot = queue_.acquire();
         if (slot == nullptr) {
             return Sh2Error::QUEUE_FULL;
@@ -91,15 +75,12 @@ class TxPath {
     struct Flushed {
         std::uint32_t written = 0;  ///< Cargoes that reached the hub.
         bool write_refused =
-            false;  ///< The HAL refused a write; flush stopped.
+            false;  ///< The HAL reported a write error; flush stopped.
     };
 
-    /// Frame and write queued cargoes until input is ready or a write fails. A
-    /// cargo the engine cannot frame is dropped rather than left to wedge the
-    /// queue behind it; a write the HAL refuses stops the flush and leaves its
-    /// cargo queued to be retried on the next pass, and says so in the result.
-    /// Pending input after a successful write yields to the next pass's receive
-    /// drain without reporting an error.
+    /// Write until input is ready or a write fails; leave failed writes queued.
+    /// Unframeable cargoes are dropped so they cannot block the queue.
+    /// Pending input yields without error to the next receive pass.
     Flushed flush(shtp::ShtpEngine& engine, IHalTransport& hal) {
         Flushed flushed;
         while (const TxCargo* slot = queue_.front()) {
@@ -119,7 +100,7 @@ class TxPath {
             }
             ++flushed.written;
             queue_.pop();
-            // AR-3: a duplex write may have filled the HAL's receive staging.
+            // A duplex write can fill the HAL's receive staging (AR-3).
             if (hal.data_ready()) {
                 break;
             }
@@ -129,22 +110,13 @@ class TxPath {
 
     [[nodiscard]] bool empty() const { return queue_.empty(); }
 
-    /// Drop everything staged. Called when the session restarts, so requests
-    /// made against the previous hub incarnation are not delivered to the next.
-    ///
-    /// clear() is safe here for the reason SingleContextCounter is: producer
-    /// and consumer are the same context, so there is no concurrent side for it
-    /// to race.
+    /// Discard prior-session requests; clear() is safe because producer and
+    /// consumer share one context.
     void reset() { queue_.clear(); }
 
    private:
     const shtp::ChannelMap* channels_ = nullptr;
-    // The counter policy has no default in pico_util, deliberately, and this
-    // is the choice it forces: requests are staged from consumer calls and
-    // drained in service(), both mainline, so no synchronisation is owed. A
-    // ring shared across contexts passes every single-threaded host test it is
-    // given and fails only on the target under preemption, which is why the
-    // assumption is named here rather than inferred.
+    // Requests and service() share one context; this ring is not synchronised.
     pico_util::RingBuffer<TxCargo, ActiveProfile::TX_QUEUE_DEPTH,
                           pico_util::SingleContextCounter>
         queue_;

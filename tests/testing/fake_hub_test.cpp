@@ -43,12 +43,8 @@ TEST(FakeHub, CapturesWritesAndInjectsFailure) {
     EXPECT_EQ(hub.writes()[0].frame[2], 0x01);
 }
 
-// The contract both shipped transports keep: an absent hub reads as SUCCESS
-// with a zero-length header, never as an error. Session::drain_transfers()
-// faults on any read error -- permanently so during startup -- so a transport
-// that reported an idle bus as a fault would kill a healthy session. This test
-// previously asserted the opposite, which is how the fake came to teach the
-// wrong rule to anyone reading it for one.
+// An idle read succeeds with a zeroed null header
+// (docs/usage-guide.md, Supplying a transport).
 TEST(FakeHub, ReadWithNoDataSucceedsWithAZeroLengthHeader) {
     FakeHub hub;
     std::array<std::uint8_t, 8> dst{0xFF, 0xFF, 0xFF, 0xFF,
@@ -65,8 +61,7 @@ TEST(FakeHub, ReadWithNoDataSucceedsWithAZeroLengthHeader) {
     EXPECT_TRUE(parsed.value().is_empty());
 }
 
-// A read with nothing behind it reports the most recent earlier edge, as the
-// interface requires of every transport, not the time the read ran.
+// An idle read retains the latest edge timestamp, independent of read time.
 TEST(FakeHub, AReadWithNothingQueuedReportsTheLastEdge) {
     FakeHub hub;
     const std::array<std::uint8_t, 5> frame{0x05, 0x00, 0x02, 0x00, 0xAA};
@@ -80,7 +75,7 @@ TEST(FakeHub, AReadWithNothingQueuedReportsTheLastEdge) {
     EXPECT_EQ(empty.value().intn_edge_us, 1234U);
 }
 
-// A buffer too small to hold a header is a caller bug, not an idle bus.
+// An idle read into a buffer smaller than a header returns BUS_ERROR.
 TEST(FakeHub, ReadIntoAnUndersizedBufferIsABusError) {
     FakeHub hub;
     std::array<std::uint8_t, 2> dst{};

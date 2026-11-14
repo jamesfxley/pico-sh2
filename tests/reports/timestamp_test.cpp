@@ -12,8 +12,7 @@ namespace {
 constexpr std::uint64_t EDGE = 1'000'000;
 
 TEST(Timestamp, BaseDeltaIsSubtractedFromTheEdge) {
-    // 1000-3625 section 7.2.1, worked verbatim: a HINT at t with a Base Delta
-    // of 10 ticks puts the batch's base at t - 1 ms (SR-4).
+    // Base delta 10 ticks gives t - 1 ms (1000-3625 §7.2.1; SR-4).
     const Timebase timebase = timebase_begin(EDGE, 10);
     EXPECT_EQ(timebase_event_us(timebase, 0), EDGE - 1000);
 }
@@ -24,9 +23,8 @@ TEST(Timestamp, DelayMovesForwardFromTheBase) {
 }
 
 TEST(Timestamp, RebaseAccumulatesForward) {
-    // 1000-3625 section 7.2.2, worked verbatim in ticks: HINT at 5.0 s with a
-    // base delta of 4.0 s gives a base of 1.0 s; a rebase of 1.5 s moves it to
-    // 2.5 s; a report delay of 1.0 s times the event at 3.5 s.
+    // Edge 5 s - base delta 4 s + rebase 1.5 s + delay 1 s = 3.5 s
+    // (1000-3625 §7.2.2).
     constexpr std::uint64_t HINT_US = 5'000'000;
     constexpr std::int32_t BASE_DELTA_TICKS = 40'000;  // 4.0 s
     constexpr std::int32_t REBASE_TICKS = 15'000;      // 1.5 s
@@ -55,9 +53,8 @@ TEST(Timestamp, ClampsBelowZeroToZero) {
     EXPECT_EQ(timebase_event_us(timebase, 0), 0U);
 }
 
-// SR-4: an edge anywhere in the 64-bit range has a defined result. A time past
-// the top of the range saturates rather than wrapping, and an edge past the
-// signed range is not reinterpreted as a negative time.
+// Results saturate above the 64-bit range, including for edges
+// beyond the signed range (SR-4).
 TEST(Timestamp, SaturatesAtTheTopOfTheRange) {
     constexpr std::uint64_t TOP = std::numeric_limits<std::uint64_t>::max();
     EXPECT_EQ(timebase_event_us(timebase_begin(TOP - 50, -1), 0), TOP);

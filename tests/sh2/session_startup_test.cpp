@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Session tests: the reset pulse, the boot wait, and the three announcements
-// the hub makes on its way up (SR-1), including each phase's deadline.
+// Reset hold, boot wait, announcement order and phase deadlines (SR-1).
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -19,10 +18,6 @@
 
 namespace {
 
-// Named one at a time rather than with a using-directive: this suite
-// reaches for a handful of helpers, and a budget line it does not need
-// is budget spent for nothing. Each is named in the namespace that
-// defines it.
 using pico_sh2::sh2_test::advance_to_wait_advertisement;
 using pico_sh2::sh2_test::drive_to_ready;
 using pico_sh2::sh2_test::make_session;
@@ -40,18 +35,15 @@ using pico_sh2::SessionState;
 using pico_sh2::Sh2Error;
 using pico_sh2::StartupPhase;
 
-// A malformed advertisement is applied entry by entry and rejected only when
-// the truncation is reached, so the entries before it have already run. The
-// session has to discard them: a wrong report length that outlives the cargo
-// that carried it mis-splits every later input cargo for the life of the
-// session, and no counter shows it.
+// Rejected advertisements lose earlier entries; a surviving wrong length
+// would mis-split every later cargo without a counter showing it.
 TEST(Session, MalformedAdvertisementLeavesNothingApplied) {
     FakeHub hub;
     Session session = make_session(hub);
     advance_to_wait_advertisement(hub, session);
 
     // A wrong length for the rotation vector, then a tag byte with no length
-    // byte after it -- a truncated entry the parse rejects.
+    // byte after it, forming a truncated entry that parsing rejects.
     std::vector<std::uint8_t> malformed = advertisement(0x05, 3);
     malformed.push_back(pico_sh2::shtp::REPORT_LENGTHS_TAG);
 
@@ -71,8 +63,7 @@ TEST(Session, MalformedAdvertisementLeavesNothingApplied) {
     EXPECT_EQ(session.state(), SessionState::READY);
 }
 
-// SR-1: reset stays asserted for the whole hold interval, and not a
-// microsecond past it.
+// Reset stays asserted until the hold interval elapses, then releases (SR-1).
 TEST(Session, ResetIsHeldForTheWholeHoldInterval) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -90,8 +81,7 @@ TEST(Session, ResetIsHeldForTheWholeHoldInterval) {
     EXPECT_FALSE(hub.reset_asserted());
 }
 
-// SR-1: the boot interval is waited out in full before the session listens for
-// the advertisement, and hub traffic inside it is not consumed.
+// Startup consumes no hub traffic until the full boot interval elapses (SR-1).
 TEST(Session, TheBootIntervalIsWaitedOutInFull) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -137,8 +127,7 @@ TEST(Session, StartupReachesReady) {
     EXPECT_EQ(session.counters().cargoes_in, 3U);
 }
 
-// SR-1: the executable and SH-2 applications announce leaving reset
-// independently, and the session does not depend on which arrives first.
+// Startup accepts either order of the two independent announcements (SR-1).
 TEST(Session, StartupReachesReadyWithInitializeBeforeResetComplete) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -274,9 +263,8 @@ TEST(Session, EmptyChannelZeroCargoDoesNotAdvanceHandshake) {
     EXPECT_EQ(session.startup_phase(), StartupPhase::WAIT_RESET_COMPLETE);
 }
 
-// SR-10: the hub chooses its own channel base (1000-3600 §2.3), so the session
-// must route from what was advertised rather than from any number compiled in.
-// The same handshake, with every SH-2 channel moved by nine.
+// The session must route from the advertised base (1000-3600 §2.3; SR-10).
+// This fixture shifts every SH-2 channel by nine.
 TEST(Session, ReachesReadyWithChannelsAtAnUnusualBase) {
     constexpr std::uint8_t BASE = 10;
     FakeHub hub;
@@ -297,8 +285,8 @@ TEST(Session, ReachesReadyWithChannelsAtAnUnusualBase) {
     EXPECT_EQ(session.counters().unrouted_cargoes, 0U);
 }
 
-// The numbers a hub used before a reset say nothing about the ones it comes
-// back with, so what the previous advertisement taught must not be reused.
+// Learned channel numbers must not be reused after re-advertisement resets
+// startup.
 TEST(Session, FollowsTheHubToADifferentBaseAfterAReset) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -317,18 +305,15 @@ TEST(Session, FollowsTheHubToADifferentBaseAfterAReset) {
     session.service();
     EXPECT_EQ(session.state(), SessionState::READY);
 
-    // Traffic on the *old* control channel is now nobody's, and is counted
-    // rather than misrouted.
+    // Traffic on the old control channel is counted as unrouted.
     const std::uint32_t before = session.counters().unrouted_cargoes;
     hub.queue_transfer(frame(control_channel(), 2, {0x00}), 0);
     session.service();
     EXPECT_GT(session.counters().unrouted_cargoes, before);
 }
 
-// An advertisement naming fewer channels than SH-2 defines leaves an unseeded
-// session unable to carry control or input, so it must not advance the
-// handshake. A seeded session is a different case: it already has numbers, and
-// proceeds on the consumer's claim about its part.
+// An incomplete advertisement must not advance an unseeded session.
+// A seeded session can proceed using the roles its seed supplies.
 TEST(Session, AnIncompleteAdvertisementDoesNotAdvanceAnUnseededSession) {
     FakeHub hub;
     Session session(hub, test_timing());  // no seed to fall back on
@@ -349,9 +334,8 @@ TEST(Session, AnIncompleteAdvertisementDoesNotAdvanceAnUnseededSession) {
     EXPECT_EQ(session.counters().protocol_errors, 1U);
 }
 
-// SR-10: the seeded half of the case above. The same incomplete advertisement
-// advances a session the consumer seeded, whose seed supplies the roles the
-// advertisement leaves out.
+// Seeds supply missing roles, so an incomplete advertisement advances startup
+// (SR-10).
 TEST(Session, AnIncompleteAdvertisementAdvancesASeededSession) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -371,10 +355,8 @@ TEST(Session, AnIncompleteAdvertisementAdvancesASeededSession) {
     EXPECT_EQ(session.counters().protocol_errors, 0U);
 }
 
-// Timing has no defaults, so a consumer that supplies none hands the session a
-// zeroed struct. Releasing reset immediately and arming deadlines that expire
-// on the same tick would look like a hub that never answers, so begin() names
-// the real fault instead.
+// Zero timing faults with INVALID_ARGUMENT instead of starting
+// (docs/usage-guide.md, Bringing a session up).
 TEST(Session, BeginRejectsUnsetTiming) {
     FakeHub hub;
     Session session(hub, pico_sh2::SessionTiming{});
@@ -384,8 +366,7 @@ TEST(Session, BeginRejectsUnsetTiming) {
 }
 
 TEST(Session, BeginRejectsTimingWithAnyZeroField) {
-    // Each field zeroed on its own, so a field valid() stops checking fails
-    // here rather than passing behind one that is still checked.
+    // Each field is zeroed separately to detect a missing valid() check.
     using Field = std::uint64_t pico_sh2::SessionTiming::*;
     for (const Field field :
          {&pico_sh2::SessionTiming::reset_hold_us,
@@ -409,8 +390,7 @@ TEST(Session, BadHeaderIsCountedNotFatal) {
     FakeHub hub;
     Session session = make_session(hub);
     advance_to_wait_advertisement(hub, session);
-    // Reserved length 0xFFFF: a dead-bus header. Counted, session keeps
-    // waiting.
+    // Reserved length 0xFFFF is counted; startup keeps waiting.
     std::vector<std::uint8_t> dead_bus{0xFF, 0xFF, 0x00, 0x00};
     hub.queue_transfer(dead_bus, 0);
     session.service();

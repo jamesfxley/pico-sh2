@@ -2,24 +2,19 @@
 
 [![CI](https://github.com/jamesfxley/pico-sh2/actions/workflows/ci.yml/badge.svg)](https://github.com/jamesfxley/pico-sh2/actions/workflows/ci.yml)
 
-`pico-sh2` is a C++20 implementation of the **SH-2** sensor protocol and its
-**SHTP** transport, as used by the CEVA/Hillcrest BNO08x family of IMUs
-(BNO085/BNO086).
+`pico-sh2` implements the SH-2 sensor protocol and SHTP transport in C++20 for
+CEVA/Hillcrest BNO08x IMUs (BNO085/BNO086).
 
-The library **code** is platform-independent: it has no Pico SDK dependency and
-no operating-system dependency, and reaches hardware only through a single
-transport interface (`IHalTransport`). The same code is host-tested against a
-fake hub and runs on a microcontroller behind an I2C or SPI driver.
+The library has no Pico SDK or operating-system dependency. It reaches hardware
+through `IHalTransport`, which can connect it to a host fake or an I2C/SPI
+driver.
+Porting requires a transport implementation and a build.
 
-The **repository**, however, belongs to the `pico-*` family and is oriented
-around the Raspberry Pi Pico: the build helpers, shared tooling
-(`pico-tooling`, the `infra/` submodule), and CI are the family's, and the library is developed and
-validated against the Pico 2 (RP2350) through its sibling
-[pico-bno085](https://github.com/jamesfxley/pico-bno085), which implements
-`IHalTransport` over RP2350 I2C/SPI and owns the board-specific pin, reset, and
-interrupt handling. Porting the *code* to another host means supplying an
-`IHalTransport` and a build; nothing in the protocol layer stands in the way,
-but the surrounding scaffolding assumes the Pico workflow.
+The repository uses the pico family's shared tooling and CI. Development and
+validation target the Pico 2 (RP2350) through
+[pico-bno085](https://github.com/jamesfxley/pico-bno085). That driver supplies
+RP2350 I2C/SPI transports, pins, reset and interrupt handling. The repository's
+build helpers assume the Pico workflow.
 
 ## Quick start
 
@@ -38,30 +33,25 @@ target_link_libraries(app PRIVATE pico_sh2::core)
 #include <pico_sh2/pico_sh2.hpp>
 ```
 
-All public symbols live in `namespace pico_sh2` with headers under the
-`pico_sh2/` prefix. The one dependency is
-[pico-util](https://github.com/jamesfxley/pico-util), the family's base layer:
-`Result`, `Callback`, the endian accessors and the outbound ring are its, so a
-consumer sees `pico_util::` types on this library's signatures.
+Public symbols use `namespace pico_sh2` and headers under `pico_sh2/`.
+The dependency [pico-util](https://github.com/jamesfxley/pico-util) supplies
+`Result`, `Callback`, byte accessors and the outbound ring. Its `pico_util::`
+types appear in this library's signatures.
 
 ## Layout
 
-The source layout, module by module, is in
-[docs/orientation.md](docs/orientation.md). The CEVA manuals every protocol
-claim rests on are listed in [docs/README.md](docs/README.md), cited by document
-number rather than redistributed.
+[docs/orientation.md](docs/orientation.md) maps the source modules.
+[docs/README.md](docs/README.md) lists the CEVA manuals cited by document
+number.
 
 ## Building & tests
 
-Every tool the gates need, the Pico SDK included, is in the pico family
-development image that `.devcontainer/devcontainer.json` builds from `infra/`;
-open the repository in its dev container to use that image. The `infra/` git
-submodule ([pico-tooling](https://github.com/jamesfxley/pico-tooling)) carries
-the gates, the CMake helpers and the pinned guides; clone with
-`git clone --recurse-submodules` or run
-`git submodule update --init --recursive` after a plain clone.
-`python3 dev.py build --tree firmware` builds the firmware tree where
-`PICO_SDK_PATH` is set.
+The family's development image contains the tools and Pico SDK used by the
+gates. Open this repository in its dev container to use the image built by
+`.devcontainer/devcontainer.json`. The `infra/` submodule
+([pico-tooling](https://github.com/jamesfxley/pico-tooling)) supplies the gates,
+CMake helpers and pinned guides. Clone with `git clone --recurse-submodules`,
+or run `git submodule update --init --recursive` after cloning.
 
 ```sh
 python3 dev.py check          # every gate; a change is done when this is green
@@ -70,77 +60,70 @@ python3 dev.py format --check # clang-format at the pinned major version
 python3 dev.py lint           # clang-tidy over the compile database
 ```
 
-`tests/device/` checks the target consumer's session binding against the library
-and constructs a session. Its output follows the [device-test convention](infra/guides/device.md#device-tests).
+`python3 dev.py build --tree firmware` builds firmware when `PICO_SDK_PATH` is
+set. `tests/device/` checks the consumer's session binding and constructs a
+session. Its output follows the [device-test
+convention](infra/guides/device.md#device-tests).
 
-`-DPICO_SH2_PROFILE=large` selects the wider sizing profile, and
-`-DPICO_SH2_PROFILE_HEADER=/abs/path/profile.hpp` a profile of your own (AR-5 in
-the specification lists the knobs and their ranges); `-DPICO_SH2_SANITIZE=ON`
-builds the host suite under ASan+UBSan. A local check selects the profile with
-`HOUSE_MATRIX_PROFILE=large python3 dev.py check` (the CI legs do the same), and
-the orientation guide lists the rest. A firmware consumer pulls this library in
-via `FetchContent`, or declares its pin directly in CMake with the family helpers,
-and gets the `pico_sh2::core` target; there is no firmware or networking code here to configure.
+Sizing, sanitiser and fuzz configurations are listed in the
+[orientation guide](docs/orientation.md#commands). Consumers can fetch the
+source with `FetchContent` or declare their pin with the family CMake helpers.
+The public aggregate target is `pico_sh2::core`; supported module targets are
+listed in the orientation guide. The library has no firmware or networking
+configuration of its own.
 
 ## What it does
 
-- **SHTP framing**: the 4-byte transfer header, per-channel/per-direction
-  sequence tracking, continuation-fragment reassembly, and the channel-0
-  advertisement (including the report-length table).
-- **SH-2 session**: the non-blocking startup state machine, Set/Get Feature
-  sensor configuration, command/response correlation, the FRS read/write
-  engines, force-flush, and batched-report timestamp reconstruction.
-- **Report decoding**: a constexpr decoder table turning raw input reports into
-  typed, unit-converted sensor events (accelerometer, gyroscope, magnetometer,
-  the rotation-vector variants, the gyro-integrated rotation vector, raw
-  sensors, and the tap/step/stability reports), extensible in a few lines per
-  new report.
+- SHTP framing, per-channel sequence tracking, continuation reassembly and
+  channel-0 advertisement parsing, including report lengths.
+- Non-blocking SH-2 startup, Set/Get Feature configuration, command correlation,
+  Flash Record System (FRS) reads and writes, force-flush and batched timestamp
+  reconstruction.
+- Typed report decoding for inertial sensors, rotation vectors, raw sensors and
+  tap, step and stability reports. New reports extend the decoder table.
 
-The design is allocation-free after start-up: every buffer is fixed-capacity,
-sized from a compile-time profile, and capacity failures are surfaced as errors
-rather than truncated.
+Buffers have fixed compile-time capacities. Capacity failures return errors or
+increment drop counters; the library allocates nothing after startup.
 
 ## Documentation
 
-- [Documentation index](docs/README.md) — what each document is for, and the
-  CEVA protocol manuals every claim here rests on
-- [Orientation](docs/orientation.md) — how the repository is laid out, and the
-  traps it has already paid for
-- [Contributing](CONTRIBUTING.md) — how a change is made and when it is done
-- [Technical specification](docs/technical-specification.md) — normative;
-  requirement IDs `AR/NR/SR/DR/BR/TR/OR` with their pass criteria
-- [Architecture](docs/architecture.md) — the engines, the service model,
-  allocation, the counter set
-- [Usage guide](docs/usage-guide.md) — starting a session, configuring sensors,
-  receiving events, reading diagnostics
-- [Standing deviations](docs/deviations.md) — scope-wide rule suppressions and
-  their review dates
-- [Releases](https://github.com/jamesfxley/pico-sh2/releases) — what changed per
-  release, and what to change in your code when an API broke
+- [Documentation index](docs/README.md): document routing and protocol manuals.
+- [Orientation](docs/orientation.md): modules, builds and local invariants.
+- [Contributing](CONTRIBUTING.md): change and verification process.
+- [Technical specification](docs/technical-specification.md): requirements and
+  pass criteria.
+- [Architecture](docs/architecture.md): engines, service model and storage.
+- [Usage guide](docs/usage-guide.md): sessions, sensors, events and diagnostics.
+- [Standing deviations](docs/deviations.md): approved suppressions and review
+  dates.
+- [Releases](https://github.com/jamesfxley/pico-sh2/releases): changes and
+  migration notes.
 
 ## Releases
 
-Versioning is semver (`EN-06.1`): a breaking change lands at a minor version
-bump while the major version is 0, and at a major version bump from 1.0. The
-notes on each [release](https://github.com/jamesfxley/pico-sh2/releases) record what
-changed and, for a break, what to change in your own code (`EN-06.3`).
+Versioning follows
+[EN-06.1](infra/house/standard/engineering/06-release-and-versioning.md).
+Each [release](https://github.com/jamesfxley/pico-sh2/releases) records changes
+and migration instructions under
+[EN-06.3](infra/house/standard/engineering/06-release-and-versioning.md).
 
 ## AI-assisted development
 
-This project is developed with AI assistance. Design decisions, review and
-acceptance are human; an AI agent writes and refactors code under direction and
-against a written engineering standard. Every change passes the repository's own
-gates — build, tests, formatter, linter, deviation counts — before it lands.
+This project uses AI assistance. Humans direct design, review and acceptance;
+AI agents write and refactor code against the engineering standard. Changes
+pass the repository's build, test, format, lint and deviation gates before
+merge.
 
-This section is disclosure, not a warranty. The terms in [LICENSE](LICENSE)
-apply unchanged, including its disclaimer of warranties.
+The terms and warranty disclaimer in [LICENSE](LICENSE) apply unchanged.
 
 ## Development configuration
 
-`house.toml` refers to `infra/family.toml`; the pinned family supplies gates,
-trees, CI preparation and synced file selections. Product dependency pins live
-in `CMakeLists.txt`. `AGENTS.md` routes to `infra/agents/AGENTS.md`.
-House renders root tool files, the workflow and `.devcontainer/devcontainer.json`;
-`python3 -m infra.pico_tooling sync` writes the bootstrap. Tests own their
-registered `.clang-tidy` overlay. Infrastructure freshness reports adoption as a
-warning and passes; unreadable release tags are unavailable evidence.
+`house.toml` selects `infra/family.toml` for family gates, build trees, CI
+preparation and synced files. Product dependency pins live in `CMakeLists.txt`.
+`AGENTS.md` routes agent instructions. House renders the tool configuration,
+workflow and dev container; `python3 -m infra.pico_tooling sync` writes the
+bootstrap. Test-specific analyser overlays are registered in
+[docs/deviations.md](docs/deviations.md). Infrastructure freshness and
+unavailable
+release-tag evidence follow the
+[family build guide](infra/docs/build.md).

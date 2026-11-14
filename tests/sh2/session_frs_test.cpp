@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Session tests: FRS record reads and writes: one operation at a time, streamed
-// responses, paced write data, and the error and deadline paths (SR-3).
+// FRS streaming reads, paced writes, errors and deadlines (SR-3).
 #include <gtest/gtest.h>
 
 #include <array>
@@ -24,10 +23,6 @@
 
 namespace {
 
-// Named one at a time rather than with a using-directive: this suite
-// reaches for a handful of helpers, and a budget line it does not need
-// is budget spent for nothing. Each is named in the namespace that
-// defines it.
 using pico_sh2::sh2_test::drive_to_ready;
 using pico_sh2::sh2_test::FrsCapture;
 using pico_sh2::sh2_test::make_session;
@@ -78,10 +73,8 @@ TEST(Session, FrsReadStreamsRecord) {
     EXPECT_EQ(session.counters().frs_completions, 1U);
 }
 
-// SR-3: the record a sink is handed stays valid for the whole call, even when
-// the sink chains the next read, as the sink contract allows. The read is
-// issued once the sink returns; a write from inside the sink is BUSY, since
-// it would need the caller's record to outlive the call.
+// A chained read waits for the sink to return, preserving its borrowed words.
+// A write from the sink returns BUSY (SR-3).
 struct Chainer {
     Session* session = nullptr;
     std::vector<std::uint32_t> before;
@@ -133,9 +126,8 @@ TEST(Session, AReadChainedFromTheSinkLeavesTheRecordIntact) {
     EXPECT_EQ(hub.writes().back().frame[4], 0xF4);
 }
 
-// A sink that retries on every completion, with the TX queue full, must not
-// hold service() forever: a failure completion carries no record to protect,
-// so a read asked for from its sink is sent at once and its error returned.
+// With the TX queue full, a sink retrying every completion must not hold
+// service() forever: without borrowed words, enqueue errors return directly.
 struct RetryingSink {
     Session* session = nullptr;
     int calls = 0;
@@ -179,19 +171,18 @@ TEST(Session, ARetryOnAFailedReadDoesNotLoop) {
         0);
     session.service();
 
-    // The record's sink holds a read; it cannot be queued, so the failure
-    // ends at the sink once, whose retry is refused there and then.
+    // The deferred read completes once at the sink with an enqueue error;
+    // its retry returns the error directly.
     EXPECT_EQ(sink.calls, 2);
     ASSERT_EQ(sink.statuses.size(), 2U);
     EXPECT_EQ(sink.statuses[0], Sh2Error::NONE);
     EXPECT_EQ(sink.statuses[1], Sh2Error::QUEUE_FULL);  // the held read (SR-3)
     ASSERT_EQ(sink.retries.size(), 2U);
     EXPECT_EQ(sink.retries[0], Sh2Error::NONE);  // held behind the record
-    EXPECT_NE(sink.retries[1], Sh2Error::NONE);  // refused, not held again
+    EXPECT_NE(sink.retries[1], Sh2Error::NONE);  // error, no deferral
 }
 
-// A sink that chains a read and then restarts the session drops the read, as
-// begin() drops any running operation: nothing goes out to the restarted hub.
+// A sink calling begin() drops its chained read before it is sent.
 struct ChainThenRestart {
     Session* session = nullptr;
     int calls = 0;
@@ -230,11 +221,9 @@ TEST(Session, ARestartFromTheSinkDropsTheChainedRead) {
     EXPECT_EQ(hub.writes().size(), sent);
 }
 
-// SR-3: a completed read must cover every word below its highest. Whether the
-// hub may answer non-densely is UNCONFIRMED (FW-5; 1000-3625 §6.3.7 does not
-// say), so a gap ends the read as PROTOCOL rather than delivering a word nobody
-// sent: a dropped response, or the tail of an earlier read of the same record,
-// looks exactly like this.
+// A completed read must cover every word below its highest, or end PROTOCOL
+// with no words (SR-3). Non-dense hub responses are UNCONFIRMED
+// (1000-3625 §6.3.7; FW-5).
 TEST(Session, FrsReadCompletingWithAGapIsProtocol) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -308,9 +297,7 @@ TEST(Session, FrsReadDeviceErrorSurfacesProtocol) {
     ASSERT_TRUE(session.frs_read(pico_sh2::frs_type::SYSTEM_ORIENTATION).ok());
     session.service();
 
-    // Status 8 = device error (DFU flash unavailable, 1000-3625 §6.3.7): the
-    // read aborts rather than accumulating or waiting for a completion that
-    // never comes.
+    // Device error (8) ends the read (1000-3625 §6.3.7).
     hub.queue_transfer(
         frame(2, 1,
               frs_read_response(pico_sh2::frs_type::SYSTEM_ORIENTATION, 8, 0, 0,
@@ -321,10 +308,8 @@ TEST(Session, FrsReadDeviceErrorSurfacesProtocol) {
     EXPECT_FALSE(session.frs_busy());
 }
 
-// SR-3: a deprecated (4, 6, 7) or reserved (9-15) read status is not one the
-// hub defines for a read in progress (1000-3625 §6.3.7), so the read ends at
-// once with PROTOCOL rather than storing the report and running on to the
-// deadline.
+// Deprecated (4, 6, 7) and reserved (9-15) read statuses end the read
+// with PROTOCOL (1000-3625 §6.3.7; SR-3).
 TEST(Session, FrsReadDeprecatedOrReservedStatusSurfacesProtocol) {
     for (const std::uint8_t status :
          {std::uint8_t{4}, std::uint8_t{6}, std::uint8_t{7}, std::uint8_t{9},
@@ -353,10 +338,8 @@ TEST(Session, FrsReadDeprecatedOrReservedStatusSurfacesProtocol) {
     }
 }
 
-// SR-3: busy (2) answers a read made while another FRS operation runs, and
-// the hub then completes that operation rather than this one (1000-3625
-// §6.3.6), so the read ends with BUSY and the hub's status, carrying none of
-// the report's words.
+// Busy (2) ends the read with BUSY and the hub status, without words
+// (1000-3625 §6.3.6; SR-3).
 TEST(Session, FrsReadBusyEndsTheReadWithBusy) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -382,9 +365,9 @@ TEST(Session, FrsReadBusyEndsTheReadWithBusy) {
     EXPECT_FALSE(session.frs_busy());
 }
 
-// SR-3: busy (2) ends a write the same way. What the hub does after a busy
-// write status is UNCONFIRMED (FW-5; 1000-3625 §6.3.5 lists the code only), so
-// the write is not left waiting on a response that may never come.
+// Busy (2) ends the write with BUSY and the hub status (SR-3).
+// Hub behaviour after a busy write status is UNCONFIRMED
+// (1000-3625 §6.3.5; FW-5).
 TEST(Session, FrsWriteBusyEndsTheWriteWithBusy) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -407,7 +390,7 @@ TEST(Session, FrsWriteBusyEndsTheWriteWithBusy) {
     EXPECT_FALSE(session.frs_busy());
 }
 
-// SR-3: record empty (5) is a completed read of zero words.
+// Record empty (5) completes a read with no words (SR-3).
 TEST(Session, FrsReadOfAnEmptyRecordCompletesWithNoWords) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -471,9 +454,8 @@ TEST(Session, FrsWriteRoundTrip) {
     EXPECT_EQ(session.counters().frs_completions, 1U);
 }
 
-// SR-3: a failed write ends with the device's own status, which a consumer
-// needs to tell a full memory from a read-only record. A status the session
-// ended on its own, a timeout, carries none.
+// A failed write carries the hub status; a local timeout carries none (SR-3).
+// The hub status distinguishes full memory from a read-only record.
 TEST(Session, FrsWriteFailureSurfacesTheDeviceStatus) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -498,8 +480,8 @@ TEST(Session, FrsWriteFailureSurfacesTheDeviceStatus) {
     EXPECT_FALSE(session.frs_busy());
 }
 
-// SR-3: record valid (8) reports the validation, not the write, so the write
-// waits for write completed (3), which ends it with that status.
+// Record valid (8) leaves the write pending until write completed (3),
+// which supplies the completion status (SR-3).
 TEST(Session, ARecordValidWriteWaitsForTheWriteToComplete) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -532,7 +514,7 @@ TEST(Session, ARecordValidWriteWaitsForTheWriteToComplete) {
     EXPECT_FALSE(session.frs_busy());
 }
 
-// SR-3: a record the hub validates and never finishes writing is not written.
+// Validation without write completion still times out (SR-3).
 TEST(Session, ARecordValidWriteThatNeverCompletesTimesOut) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -558,8 +540,7 @@ TEST(Session, ARecordValidWriteThatNeverCompletesTimesOut) {
     EXPECT_FALSE(cap.device_status.has_value());
 }
 
-// SR-3: a write the hub answers record invalid (9) is not written, and the
-// status byte says why.
+// Record invalid (9) fails the write with the hub status (SR-3).
 TEST(Session, AWriteAnsweredRecordInvalidFails) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -584,7 +565,7 @@ TEST(Session, AWriteAnsweredRecordInvalidFails) {
     EXPECT_FALSE(session.frs_busy());
 }
 
-// SR-3: a read the hub completes carries the hub's completed status (3).
+// A completed read carries the hub status (3) (SR-3).
 TEST(Session, ACompletedFrsReadCarriesTheDeviceStatus) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -645,7 +626,7 @@ TEST(Session, FrsReadTimesOut) {
 
     hub.advance_time(500'001);  // past frs_timeout_us
     session.service();
-    // Ended here, but held while the hub may still be answering it.
+    // Ended locally, but held while the hub can still be answering it.
     EXPECT_TRUE(session.frs_busy());
     EXPECT_EQ(cap.status, Sh2Error::TIMEOUT);
     EXPECT_EQ(session.counters().frs_timeouts, 1U);
@@ -653,8 +634,7 @@ TEST(Session, FrsReadTimesOut) {
     EXPECT_EQ(session.counters().frs_timeouts, 1U);
 }
 
-// TR-1: the longest FRS timeout wraps to the past for neither a read nor a
-// write.
+// The longest FRS timeout does not wrap for a read or a write (TR-1).
 TEST(Session, TheLongestFrsReadTimeoutDoesNotWrap) {
     FakeHub hub;
     pico_sh2::SessionTiming timing = pico_sh2::sh2_test::test_timing();
@@ -690,9 +670,8 @@ TEST(Session, FrsRequestBeforeReadyIsNotReady) {
               Sh2Error::NOT_READY);
 }
 
-// SR-3: a record longer than the profile's FRS buffer ends the read with
-// TABLE_FULL. Completing it with the words that fitted would hand the consumer
-// a truncated record marked as whole.
+// A read beyond the profile's FRS capacity ends TABLE_FULL without
+// delivering a truncated record (SR-3).
 TEST(Session, FrsReadLongerThanTheBufferEndsWithTableFull) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -722,8 +701,8 @@ TEST(Session, FrsReadLongerThanTheBufferEndsWithTableFull) {
     EXPECT_EQ(session.counters().frs_completions, 0U);
 }
 
-// SR-3: a response naming another record is the tail of an earlier read that
-// already ended. It is counted and never written into the running read.
+// A response for another record is counted as stray and leaves
+// the current read unchanged (SR-3).
 TEST(Session, AStrayResponseFromAnEarlierReadIsCountedNotApplied) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -768,10 +747,7 @@ TEST(Session, AStrayResponseFromAnEarlierReadIsCountedNotApplied) {
 
 }  // namespace
 
-// SR-3: one FRS operation at a time (1000-3625 §6.3.7). A read the session
-// ended itself -- here past its deadline -- may still be running on the hub, so
-// a new operation is held until the hub's tail ends. The tail of a timed-out
-// read of the same record would otherwise complete the retry with its words.
+// A retry waits for the timed-out read's tail to end (1000-3625 §6.3.7; SR-3).
 TEST(Session, ARetryAfterATimeoutIsHeldUntilTheTailEnds) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -791,7 +767,7 @@ TEST(Session, ARetryAfterATimeoutIsHeldUntilTheTailEnds) {
     session.service();
     ASSERT_EQ(cap.status, Sh2Error::TIMEOUT);
 
-    // The hub is still sending: a retry is refused while it does.
+    // The hub is still sending, so a retry returns BUSY.
     EXPECT_TRUE(session.frs_busy());
     EXPECT_EQ(session.frs_read(TYPE).error(), Sh2Error::BUSY);
     const std::uint32_t stray = session.counters().frs_stray_responses;
@@ -816,8 +792,7 @@ TEST(Session, ARetryAfterATimeoutIsHeldUntilTheTailEnds) {
     EXPECT_EQ(cap.words[0], 0x55555555U);
 }
 
-// SR-3: a hub that never finishes the tail holds the next operation for one
-// FRS timeout, not for ever.
+// An unfinished tail holds new operations for at most one FRS timeout (SR-3).
 TEST(Session, AnUnfinishedTailHoldsForOneTimeout) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -836,8 +811,7 @@ TEST(Session, AnUnfinishedTailHoldsForOneTimeout) {
     EXPECT_TRUE(session.frs_read(TYPE).ok());
 }
 
-// SR-3: a hub reset ends whatever the hub was doing, so it ends the hold too:
-// the hub announcing itself again, and a begin() the caller asks for.
+// A hub reset or begin() ends the hold (SR-3).
 TEST(Session, AHubResetEndsTheHold) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -863,8 +837,7 @@ TEST(Session, ABeginEndsTheHold) {
     EXPECT_FALSE(session.frs_busy());
 }
 
-// SR-3: the hold ends on the held record's own last status, and on nothing
-// else -- not a response that says more follows, not another record's.
+// Only the held record's final status ends the hold (SR-3).
 TEST(Session, OnlyTheHeldRecordsLastStatusEndsTheHold) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -891,8 +864,8 @@ TEST(Session, OnlyTheHeldRecordsLastStatusEndsTheHold) {
     EXPECT_EQ(session.counters().frs_stray_responses, stray + 3);
 }
 
-// SR-3: a write whose next data report cannot be queued ends QUEUE_FULL, and
-// the hub, still waiting for that data, holds the next operation.
+// Failure to queue the next write data ends QUEUE_FULL and holds
+// new operations while the hub waits for that data (SR-3).
 TEST(Session, AWriteThatCannotBeFedIsHeld) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -916,8 +889,7 @@ TEST(Session, AWriteThatCannotBeFedIsHeld) {
               Sh2Error::BUSY);
 }
 
-// SR-3: a read ended for a full buffer leaves the hub sending the rest of the
-// record, so it is held behind like a timeout.
+// A read ending TABLE_FULL holds new operations behind its tail (SR-3).
 TEST(Session, ATableFullReadHoldsBehindItsTail) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -938,8 +910,7 @@ TEST(Session, ATableFullReadHoldsBehindItsTail) {
     EXPECT_FALSE(session.frs_busy());
 }
 
-// SR-3: record valid (8) is not a held write's last status; write completed
-// (3) still follows it.
+// Record valid (8) leaves a held write waiting for write completed (3) (SR-3).
 TEST(Session, ARecordValidStatusDoesNotEndAHeldWrite) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -964,8 +935,8 @@ TEST(Session, ARecordValidStatusDoesNotEndAHeldWrite) {
     EXPECT_FALSE(session.frs_busy());
 }
 
-// SR-3: a timed-out write is held behind too; its tail is the hub's write
-// statuses, which name no record, until one ends the write.
+// A timed-out write holds new operations until its final hub status;
+// write statuses name no record (SR-3).
 TEST(Session, ATimedOutWriteHoldsUntilTheHubEndsIt) {
     FakeHub hub;
     Session session = make_session(hub);

@@ -1,18 +1,11 @@
 // SPDX-License-Identifier: MIT
-// AR-4's cross-compiled probe: the public surface a consumer uses, compiled and
-// linked for the target with no SDK library behind it.
-//
-// Nothing runs this. It exists so the linker has to resolve everything the
-// umbrella header pulls in, which is what turns "it compiles" into "it also
-// links freestanding". A header that reached for a hosted facility -- an
-// exception path, <iostream>, a heap-assuming container -- or for an SDK or OS
-// symbol fails here rather than in the first firmware consumer's build. It is
-// also the image the footprint gate measures.
+// Cross-compiles and links the public surface without an SDK library;
+// the footprint gate measures this image. It is not run (AR-4).
 #include <algorithm>
 #include <cstdint>
 #include <span>
 
-// The umbrella is what this probes.
+// The probe includes the consumer umbrella.
 #include "pico_sh2/pico_sh2.hpp"  // IWYU pragma: keep
 #include "pico_sh2/sh2/hal_transport.hpp"
 #include "pico_sh2/sh2/session.hpp"
@@ -22,10 +15,9 @@
 
 namespace {
 
-/// The seam, implemented as trivially as the interface allows. read_transfer
-/// reports an idle bus as a zeroed header, length 0 -- a transfer with no
-/// cargo -- which is what an idle read must return: an error there wedges
-/// Session::drain_transfers().
+// final: the public non-virtual destructor is safe only while nothing derives
+// from this class.
+/// Idle reads must succeed (docs/usage-guide.md, Supplying a transport).
 class NullTransport final : public pico_sh2::IHalTransport {
    public:
     bool data_ready() override { return false; }
@@ -53,10 +45,8 @@ class NullTransport final : public pico_sh2::IHalTransport {
 }  // namespace
 
 int main() {
-    // Static storage, not automatic: the sizing profile's reassembly buffer and
-    // TX queue are Session members, so on the stack they never reach .bss and
-    // the footprint gate would measure newlib alone. Function-local so this is
-    // still not a global variable.
+    // Static storage is explained in tests/firmware/README.md.
+    // Function-local storage avoids a global variable.
     static NullTransport transport;
     static pico_sh2::Session session(transport, pico_sh2::SessionTiming{});
     session.begin();

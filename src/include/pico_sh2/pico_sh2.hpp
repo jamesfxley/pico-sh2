@@ -2,19 +2,14 @@
 #pragma once
 
 /// \file pico_sh2.hpp
-/// pico-sh2 umbrella header. Pulls in the full public surface of the SH-2 /
-/// SHTP protocol library, so a consumer can include this alone and construct
-/// and drive a Session. Platform-independent: no Pico SDK, no OS headers.
-///
-/// Everything under pico_sh2/sh2/detail/ is internal to Session and is
-/// deliberately not exported here.
+/// Public SH-2/SHTP headers; sh2/detail/ remains internal to Session.
+/// Cargo is the payload carried by one or more SHTP transfers.
 
 // The umbrella re-exports the public surface.
 // IWYU pragma: begin_exports
 
-/// This library's error taxonomy and the Result carrying it. The Result,
-/// Callback and byte accessors themselves are pico_util's, reached through the
-/// headers below rather than re-exported here.
+/// Library errors and pico_util::Result; the headers using other pico-util
+/// types include them.
 #include "pico_sh2/util/result.hpp"
 
 /// SHTP transport: channels, header, advertisement, framing engine.
@@ -50,12 +45,11 @@
 
 namespace pico_sh2 {
 
-/// Semantic version of the library, mirroring project(pico_sh2 VERSION ...).
-/// Major version; changes when the public API breaks.
+/// Major version, bound to project(pico_sh2 VERSION ...).
 inline constexpr int VERSION_MAJOR = 0;
-/// Minor version; changes when the public API grows compatibly.
+/// Minor version, bound to project(pico_sh2 VERSION ...).
 inline constexpr int VERSION_MINOR = 1;
-/// Patch version; changes when nothing in the public API does.
+/// Patch version, bound to project(pico_sh2 VERSION ...).
 inline constexpr int VERSION_PATCH = 0;
 
 }  // namespace pico_sh2

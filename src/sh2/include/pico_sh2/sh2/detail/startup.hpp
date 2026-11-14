@@ -2,25 +2,11 @@
 #pragma once
 
 /// \file startup.hpp
-/// Startup sequencing (SR-1): the reset pulse, the boot wait, and the three
-/// announcements the hub makes on its way up, each phase deadline-bounded.
-///
-/// After reset the hub sends its advertisement on the command channel
-/// (1000-3535 §2.3.1), and then two independent announcements: the executable
-/// application's reset-complete on the device channel (1000-3600 §2.2) and the
-/// sensorhub application's unsolicited Initialize response (SH-2 Reference
-/// Manual §6.4.4). They come from separate applications, and no manual here
-/// orders them against each other, so the sequencer depends on neither: both
-/// are tracked and the handshake completes on the second of the two, whichever
-/// that is. That is a property of this code rather than a claim about any part.
-///
-/// The phase is the state, not a value derived from flags: the phase a waiting
-/// session reports is whichever announcement is still outstanding.
-///
-/// The sequencer owns no bus and no counters. It reports what it needs done
-/// (release the reset line, a deadline expired) and Session performs it.
-///
-/// This is an internal collaborator of Session, not public API.
+/// Internal reset, boot and announcement sequencing with phase deadlines
+/// (SR-1). Advertisement precedes reset-complete and Initialize (1000-3535
+/// §2.3.1, 1000-3600 §2.2, 1000-3625 §6.4.4); their mutual order is
+/// UNCONFIRMED. The sequencer tracks both independently; Session performs bus
+/// actions and counts events.
 
 #include <cstdint>
 
@@ -52,9 +38,8 @@ class StartupSequencer {
         deadline_us_ = 0;
     }
 
-    /// Re-run the handshake for a hub that reset underneath us (SR-5). The
-    /// reset line is not touched: the hub is already restarting on its own and
-    /// will re-advertise.
+    /// Restart the handshake without driving reset; the hub is already
+    /// restarting (SR-5).
     void restart(std::uint64_t now_us) {
         saw_reset_complete_ = false;
         saw_initialize_ = false;
@@ -84,16 +69,14 @@ class StartupSequencer {
         return result;
     }
 
-    /// True while the hub is still in the timed reset/boot window, before any
-    /// traffic is expected.
+    /// True during timed reset or boot, before traffic is expected.
     [[nodiscard]] bool in_reset_window() const {
         return phase_ == StartupPhase::RESET_ASSERTED ||
                phase_ == StartupPhase::BOOTING;
     }
 
-    /// Consume the advertisement. An unsolicited one restarts the announcement
-    /// wait, since it precedes the two announcements that follow it; a
-    /// requested one keeps what arrived while it was outstanding.
+    /// Start announcement waits; a requested advertisement keeps prior
+    /// announcements.
     void on_advertisement(std::uint64_t now_us) {
         if (!advertisement_requested_) {
             saw_reset_complete_ = false;
@@ -103,9 +86,8 @@ class StartupSequencer {
         advance(now_us);
     }
 
-    /// A reset-complete arrived without the advertisement that precedes it
-    /// (SR-5). Record it and keep waiting in WAIT_ADVERTISEMENT, under the
-    /// deadline restart() set, for the advertisement the caller requests.
+    /// Records reset-complete while awaiting a requested advertisement; the
+    /// deadline set by restart() remains (SR-5).
     void on_reset_complete_without_advertisement() {
         saw_reset_complete_ = true;
         advertisement_requested_ = true;
@@ -117,9 +99,8 @@ class StartupSequencer {
                phase_ == StartupPhase::WAIT_INITIALIZE;
     }
 
-    /// True if the Initialize response is expected in the current phase,
-    /// which includes the wait for a requested advertisement: the hub's
-    /// announcements do not wait for the host to ask.
+    /// True when Initialize is expected, including while an advertisement is
+    /// requested.
     [[nodiscard]] bool accepts_initialize() const {
         return accepts_reset_complete() || advertisement_requested_;
     }
@@ -151,8 +132,8 @@ class StartupSequencer {
         deadline_us_ = deadline_after(now_us, timeout_us);
     }
 
-    /// Complete once both announcements have arrived; until then wait in the
-    /// phase named by whichever is still outstanding.
+    /// Complete after both announcements; otherwise report the one still
+    /// awaited.
     void advance(std::uint64_t now_us) {
         if (saw_reset_complete_ && saw_initialize_) {
             phase_ = StartupPhase::COMPLETE;

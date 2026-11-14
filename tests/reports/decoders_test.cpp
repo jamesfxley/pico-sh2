@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: MIT
-// DR-1: golden wire vectors for every in-scope decoder, each round-tripping to
-// the documented units and Q point. Byte layouts, Q points, and wire lengths
-// are from the SH-2 Reference Manual, section 6.5. Each vector is hand-built so
-// the expected engineering-unit values are exact powers of two, making the
-// fixed-point conversion checkable with EXPECT_FLOAT_EQ.
+// Golden vectors check every in-scope decoder's units and Q point
+// (1000-3625 §6.5; DR-1).
+// Powers of two give exact EXPECT_FLOAT_EQ values.
 #include "pico_sh2/reports/decoders.hpp"
 
 #include <gtest/gtest.h>
@@ -162,9 +160,8 @@ TEST(Decoders, GyroIntegratedRotationVectorHasNoPrefix) {
         1.0F);
 }
 
-// DR-1 golden vectors for the remaining decoded reports, each laid out and
-// scaled as SH-2 Reference Manual 1000-3625 v1.9 §6.5 gives it. Values are
-// chosen so a Q point off by one changes the result.
+// Remaining decoder vectors use values that expose a Q point off by one
+// (1000-3625 §6.5; DR-1).
 
 TEST(Decoders, LinearAccelerationQ8) {
     // §6.5.10, Q8 m/s^2: X = 256 -> 1.0, Y = -512 -> -2.0, Z = 128 -> 0.5.
@@ -283,7 +280,7 @@ TEST(Decoders, ShortSpanIsInvalidArgument) {
               Sh2Error::INVALID_ARGUMENT);
 }
 
-// --- cargo walk -----------------------------------------------------------
+// Cargo walk.
 
 struct Capture {
     std::vector<SensorEvent> events;
@@ -309,11 +306,8 @@ TEST(Walk, SplitsConcatenatedReports) {
     EXPECT_EQ(cap.events[1].sensor, SensorId::TAP_DETECTOR);
 }
 
-// DR-3: a report with a known advertised length but no decoder is skipped and
-// counted, and the walk continues.
-// SR-6: Flush Completed (0xEF) is two bytes (1000-3625 §6.5.7) and the seeded
-// table knows it, so one inside an input cargo is stepped over and the report
-// after it still decodes.
+// A known-length report without a decoder is skipped and counted (DR-3).
+// The walk steps over Flush Completed (1000-3625 §6.5.7; SR-6).
 TEST(Walk, AFlushCompletedInAnInputCargoIsSteppedOver) {
     std::array<std::uint8_t, 12> cargo = {0xEF, 0x01,  // flush, accel
                                           0x01, 0x2A, 0x03, 0x00, 0x00, 0x01,
@@ -345,9 +339,8 @@ TEST(Walk, KnownLengthNoDecoderIsSkipped) {
     EXPECT_TRUE(cap.events.empty());
 }
 
-// DR-3: a length shorter than the report's decoder needs is stepped over and
-// counted like a report with no decoder, and the walk carries on from the
-// length it was told.
+// A length shorter than the decoder needs is skipped and counted;
+// the walk continues at that length (DR-3).
 TEST(Walk, ALengthShorterThanItsDecoderNeedsIsSkipped) {
     std::array<std::uint8_t, 15> cargo = {
         0x01, 0x00, 0x03, 0x00, 0x00,  // accelerometer, advertised as 5
@@ -367,8 +360,7 @@ TEST(Walk, ALengthShorterThanItsDecoderNeedsIsSkipped) {
     EXPECT_EQ(cap.events[0].sensor, SensorId::GYROSCOPE);
 }
 
-// DR-3: an unknown length aborts the cargo walk — it cannot resynchronize —
-// and is counted.
+// An unknown length aborts the walk and is counted (DR-3).
 TEST(Walk, UnknownLengthAbortsAndCounts) {
     std::array<std::uint8_t, 4> cargo = {0x99, 0, 0, 0};
     Capture cap;
@@ -381,8 +373,7 @@ TEST(Walk, UnknownLengthAbortsAndCounts) {
     EXPECT_EQ(stats.unknown_reports, 1U);
 }
 
-// DR-3: a report whose length overruns the cargo aborts the walk and is
-// counted.
+// A report overrunning the cargo aborts the walk and is counted (DR-3).
 TEST(Walk, TruncatedReportAbortsAndCounts) {
     // Accelerometer needs 10 bytes but only 3 are present.
     std::array<std::uint8_t, 3> cargo = {0x01, 0x00, 0x03};
@@ -396,9 +387,8 @@ TEST(Walk, TruncatedReportAbortsAndCounts) {
     EXPECT_EQ(stats.truncated_reports, 1U);
 }
 
-// SR-4, BR-1: an advertised timestamp-record length too short to carry the
-// delta aborts the walk. Reading the delta would take bytes from the report
-// after it, or from past the end of the cargo.
+// A timestamp length too short for its delta aborts before reading into
+// the next report or beyond the cargo (SR-4, BR-1).
 TEST(Walk, AShortTimestampRecordAbortsAndCounts) {
     std::array<std::uint8_t, 11> cargo = {
         0xFB,                                // base timestamp, advertised as 1
@@ -417,9 +407,8 @@ TEST(Walk, AShortTimestampRecordAbortsAndCounts) {
 }
 
 TEST(Walk, ReconstructsEventTimeFromBaseTimestamp) {
-    // A base timestamp record (0xFB, delta = 10 ticks) then an accelerometer
-    // report with delay = 5 ticks. The base delta is subtracted and the delay
-    // added: event_us = edge - 100*10 + 100*5 = edge - 500 (SR-4).
+    // Base delta 10 ticks, report delay 5: edge - 100*10 + 100*5 = edge - 500
+    // (SR-4).
     std::array<std::uint8_t, 15> cargo = {
         0xFB, 0x0A, 0x00, 0x00, 0x00,  // base delta = 10 (100us ticks)
         0x01, 0x00, 0x00, 0x05,        // accel: seq, status(acc=0), delay_lsb=5
@@ -456,13 +445,9 @@ TEST(Walk, BaseTimestampOverflowFallsBackToEdge) {
     EXPECT_TRUE(cap.events[0].timebase_overflow);
 }
 
-// --- decode-time Q overrides (DR-2) ---------------------------------------
+// Decode-time Q overrides (DR-2).
 
-// q_to_float shifts by the Q point, so a Q above MAX_Q_POINT is undefined.
-// The table is public and reachable without a Session -- a consumer decoding a
-// captured cargo offline installs an override on it directly -- so the refusal
-// belongs to the table rather than to the paths that happen to call it. On ARM
-// an accepted Q of 40 would shift by 8 and silently mis-scale every field.
+// The public table rejects Q above MAX_Q_POINT before callers can shift (DR-2).
 TEST(QOverride, TableRefusesAQAboveTheRepresentableMaximum) {
     QOverrideTable table;
     const auto accel = static_cast<std::uint8_t>(SensorId::ACCELEROMETER);
@@ -497,9 +482,8 @@ TEST(QOverride, DecodeReportUsesInstalledPrimaryQ) {
 }
 
 TEST(QOverride, DecodeReportUsesInstalledSecondaryQ) {
-    // Rotation vector (0x05): quaternion real=+1 (Q14) and heading accuracy=+1
-    // (Q12). Overriding only the secondary Q to 11 doubles the accuracy while
-    // leaving the quaternion untouched.
+    // Quaternion real = 1.0 Q14, accuracy = 1.0 Q12.
+    // Secondary Q11 doubles accuracy and leaves the quaternion unchanged.
     std::array<std::uint8_t, 14> rv = {
         0x05, 0x00, 0x00, 0x00,  // prefix
         0x00, 0x00, 0x00, 0x00,  // i=0, j=0
@@ -531,9 +515,8 @@ TEST(QOverride, WalkAppliesOverride) {
     EXPECT_FLOAT_EQ(std::get<Vec3>(cap.events[0].payload).x, 2.0F);
 }
 
-// DR-2: the gyro-integrated report has no bias or accuracy field, so an
-// override moves its quaternion's Q and never its angular velocity's, which
-// §6.5.44 fixes at Q10.
+// A gyro-integrated override changes quaternion Q, leaving angular velocity
+// at Q10 (1000-3625 §6.5.44; DR-2).
 TEST(QOverride, GyroIntegratedOverridesOnlyTheQuaternion) {
     // Quaternion i=+1 (Q14) and angular-velocity x=+1 (Q10).
     std::array<std::uint8_t, 14> girv = {
@@ -557,8 +540,8 @@ TEST(QOverride, GyroIntegratedOverridesOnlyTheQuaternion) {
         1.0F);
 }
 
-// DR-2: an uncalibrated report's bias is a bias field, so metadata Q point 2
-// scales it independently of the sample (1000-3625 §5.1).
+// Secondary Q scales uncalibrated bias independently of the sample
+// (1000-3625 §5.1; DR-2).
 TEST(QOverride, UncalibratedBiasTakesTheSecondaryQ) {
     // Uncalibrated gyro (0x07, Q9): value x=+1 (0x0200), bias x=+0.5 (0x0100).
     std::array<std::uint8_t, 16> uncal = {0x07, 0x00, 0x03, 0x00, 0x00, 0x02,
@@ -585,8 +568,7 @@ TEST(QOverride, ReplaceAndCapacity) {
     ASSERT_TRUE(table.set(0x01, ReportQ{7, 0}));
     EXPECT_EQ(table.resolve(0x01, ReportQ{0, 0}).primary, 7U);
 
-    // Fill the remaining slots with distinct IDs, then a new ID is refused
-    // while replacing an existing one still succeeds.
+    // A new ID returns TABLE_FULL at capacity; replacement still succeeds.
     for (std::uint8_t id = 2; id <= QOverrideTable::CAPACITY; ++id) {
         ASSERT_TRUE(table.set(id, ReportQ{id, 0}));
     }

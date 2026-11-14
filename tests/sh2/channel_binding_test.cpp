@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT
-// SR-10: a role is bound only from its own application's GUID. The names SH-2
-// looks for are ordinary words another application may use for a channel of
-// its own, so a name matches only inside the scope that defines it.
+// Channel names bind roles only within their application GUID (SR-10).
 #include "pico_sh2/sh2/channel_binding.hpp"
 
 #include <gtest/gtest.h>

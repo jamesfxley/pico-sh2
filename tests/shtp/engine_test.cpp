@@ -19,10 +19,8 @@ using pico_sh2::Sh2Error;
 using pico_sh2::shtp::HEADER_SIZE;
 using pico_sh2::shtp::ShtpEngine;
 
-// Records every cargo the engine delivers so tests can assert on channel,
-// sequence, lead edge, and payload bytes. `origin` keeps the address the cargo
-// was delivered from, so a test can tell an in-place delivery from a copy
-// (AR-2).
+// Captures cargo fields and payload; origin distinguishes in-place
+// delivery from reassembly (AR-2).
 struct Capture {
     struct Cargo {
         std::uint8_t channel;
@@ -50,7 +48,7 @@ ShtpEngine::CargoSink sink_for(Capture& capture) {
     return ShtpEngine::CargoSink::bind<Capture, &Capture::on_cargo>(&capture);
 }
 
-// NR-2, NR-5, EN-04.5: equivalent delivery at every physical split.
+// Delivery is identical at every physical split (EN-04.5; NR-2, NR-5).
 TEST(ShtpEngine, ReassemblyIsIndependentOfEverySplit) {
     const std::vector<std::uint8_t> expected{0, 1, 2, 3, 4,  5,
                                              6, 7, 8, 9, 10, 11};
@@ -112,18 +110,16 @@ TEST(ShtpEngine, DeliversSingleTransferCargo) {
     EXPECT_EQ(engine.stats().cargoes_delivered, 1U);
 }
 
-// NR-5: the cargo is complete when the payload accumulated across its transfers
-// reaches the total the lead header declared, not on a short transfer, and the
-// sink receives it exactly once.
+// Reassembly delivers once at the lead header's declared length,
+// independently of short transfers (NR-5).
 TEST(ShtpEngine, ReassemblesFragmentedCargo) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
     ShtpEngine engine(buffer);
     engine.set_cargo_sink(sink_for(capture));
 
-    // Total payload is 6 bytes across two transfers. The lead header's length
-    // field is the whole cargo (6 + 4 = 10); it carries the first 4 payload
-    // bytes. The continuation carries the last 2.
+    // Six payload bytes: lead length 10 declares all six but carries four;
+    // the continuation carries two.
     std::array<std::uint8_t, 8> lead{0x0A, 0x00, 0x02, 0x00,
                                      0xAA, 0xBB, 0xCC, 0xDD};
     std::array<std::uint8_t, 6> cont{0x06, 0x80, 0x02, 0x01, 0xEE, 0xFF};
@@ -138,8 +134,8 @@ TEST(ShtpEngine, ReassemblesFragmentedCargo) {
               (std::vector<std::uint8_t>{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}));
 }
 
-// NR-5: bytes past the length the lead header declares are not cargo, in a
-// single transfer and in a continuation alike.
+// Bytes beyond the declared length are ignored in both whole
+// and fragmented cargoes (NR-5).
 TEST(ShtpEngine, BytesBeyondTheDeclaredLengthAreIgnored) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
@@ -165,7 +161,7 @@ TEST(ShtpEngine, BytesBeyondTheDeclaredLengthAreIgnored) {
               (std::vector<std::uint8_t>{0xC0, 0xC1, 0xC2, 0xC3, 0xC4}));
 }
 
-// SR-4: a single-transfer cargo is timed by the edge that announced it.
+// A whole cargo carries the edge that announced it (SR-4).
 TEST(ShtpEngine, SingleTransferCargoCarriesItsEdge) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
@@ -180,8 +176,7 @@ TEST(ShtpEngine, SingleTransferCargoCarriesItsEdge) {
     EXPECT_EQ(capture.cargoes[0].lead_edge_us, 12'345U);
 }
 
-// SR-4: a fragmented cargo is timed by its *lead* transfer's edge, not by the
-// continuation that happens to complete it (1000-3535 §2.6).
+// A fragmented cargo carries its lead edge (1000-3535 §2.6; SR-4).
 TEST(ShtpEngine, FragmentedCargoCarriesTheLeadEdge) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
@@ -199,8 +194,7 @@ TEST(ShtpEngine, FragmentedCargoCarriesTheLeadEdge) {
     EXPECT_EQ(capture.cargoes[0].lead_edge_us, 1'000U);
 }
 
-// An empty (idle) transfer carries no cargo, so it cannot displace the edge of
-// a cargo still being reassembled.
+// An idle transfer leaves the reassembly's lead edge intact.
 TEST(ShtpEngine, IdleTransferDoesNotDisturbTheLeadEdge) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
@@ -220,8 +214,7 @@ TEST(ShtpEngine, IdleTransferDoesNotDisturbTheLeadEdge) {
     EXPECT_EQ(capture.cargoes[0].lead_edge_us, 1'000U);
 }
 
-// AR-2: a cargo that arrives whole in one transfer is delivered from the
-// caller's staging buffer, so no inbound copy is made on the common path.
+// A whole cargo is delivered from the caller's staging buffer (AR-2).
 TEST(ShtpEngine, SingleTransferCargoIsDeliveredInPlace) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
@@ -236,8 +229,7 @@ TEST(ShtpEngine, SingleTransferCargoIsDeliveredInPlace) {
     EXPECT_EQ(capture.cargoes[0].origin, transfer.data() + HEADER_SIZE);
 }
 
-// AR-2: only a continuation-fragmented cargo is copied, and it is delivered
-// from the reassembly buffer it was accumulated into.
+// A fragmented cargo is delivered from the reassembly buffer (AR-2).
 TEST(ShtpEngine, FragmentedCargoIsDeliveredFromReassemblyBuffer) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
@@ -278,8 +270,7 @@ TEST(ShtpEngine, EmptyTransferIsIdleNoOp) {
     EXPECT_EQ(capture.cargoes.size(), 0U);
 }
 
-// BR-1: a cargo larger than the reassembly buffer is dropped whole and counted,
-// never truncated into a partial event.
+// An oversize cargo is dropped whole and counted (BR-1).
 TEST(ShtpEngine, DropsOversizeCargo) {
     Capture capture;
     std::array<std::uint8_t, 16> buffer{};  // small on purpose
@@ -294,7 +285,7 @@ TEST(ShtpEngine, DropsOversizeCargo) {
     EXPECT_EQ(capture.cargoes.size(), 0U);
 }
 
-// NR-2: a continuation with no cargo in progress is dropped whole.
+// A continuation with no cargo in progress is dropped and counted (NR-2).
 TEST(ShtpEngine, DropsStrayContinuation) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
@@ -307,7 +298,7 @@ TEST(ShtpEngine, DropsStrayContinuation) {
     EXPECT_EQ(engine.stats().reassembly_drops, 1U);
 }
 
-// NR-2: a continuation arriving on a different channel drops the whole cargo.
+// A cross-channel continuation drops the whole cargo (NR-2).
 TEST(ShtpEngine, DropsCrossChannelContinuation) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
@@ -323,8 +314,7 @@ TEST(ShtpEngine, DropsCrossChannelContinuation) {
     EXPECT_EQ(capture.cargoes.size(), 0U);
 }
 
-// NR-2: a new lead interrupting a cargo in progress drops it whole, never
-// delivering the partial reassembly.
+// A new lead drops the interrupted cargo without partial delivery (NR-2).
 TEST(ShtpEngine, NewLeadDropsInterruptedCargo) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
@@ -344,8 +334,7 @@ TEST(ShtpEngine, NewLeadDropsInterruptedCargo) {
     EXPECT_EQ(capture.cargoes[0].data, (std::vector<std::uint8_t>{0x11, 0x22}));
 }
 
-// NR-3: a skipped receive sequence number is counted once and the cargo is
-// still delivered — a gap is diagnostic, never fatal.
+// A sequence gap counts once and still delivers the cargo (NR-3).
 TEST(ShtpEngine, CountsSequenceGap) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
@@ -384,8 +373,7 @@ TEST(ShtpEngine, FramesOutboundWithIncrementingSequence) {
     EXPECT_EQ(out[3], 0);
 }
 
-// NR-2: outbound framing refuses an oversize cargo rather than fragmenting it,
-// because the hub cannot reassemble host writes.
+// Outbound framing returns CARGO_TOO_LARGE without fragmentation (NR-2).
 TEST(ShtpEngine, RejectsOutboundThatDoesNotFit) {
     std::array<std::uint8_t, 64> buffer{};
     ShtpEngine engine(buffer);
@@ -412,8 +400,7 @@ TEST(ShtpEngine, ResetClearsInProgressAndSequences) {
     EXPECT_EQ(engine.ingest(cont, NO_EDGE).error(), Sh2Error::REASSEMBLY_DROP);
 }
 
-// The sequence half of reset(): outbound numbering restarts at zero, and a
-// channel's next inbound sequence is taken as its first, not as a gap.
+// Reset restarts TX sequences at zero and RX gap tracking at the next input.
 TEST(ShtpEngine, ResetRestartsBothSequenceCounts) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
@@ -437,8 +424,8 @@ TEST(ShtpEngine, ResetRestartsBothSequenceCounts) {
     EXPECT_EQ(engine.stats().sequence_gaps, gaps) << "a restart read as a gap";
 }
 
-// OR-1: an oversize cargo is one drop however many transfers carry it. Its
-// continuations are discarded without counting until the channel's next lead.
+// An oversize cargo counts one drop across its transfers;
+// the channel's next lead ends discard mode (OR-1).
 TEST(ShtpEngine, AnOversizeCargoCountsOneDropAcrossItsTransfers) {
     Capture capture;
     std::array<std::uint8_t, 16> buffer{};
@@ -465,7 +452,7 @@ TEST(ShtpEngine, AnOversizeCargoCountsOneDropAcrossItsTransfers) {
     EXPECT_EQ(engine.stats().reassembly_drops, 2U);
 }
 
-// OR-1: a run of continuations whose lead never arrived is one lost cargo.
+// Stray continuations from one lost cargo count one drop (OR-1).
 TEST(ShtpEngine, StrayContinuationsCountOneDropPerCargo) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};

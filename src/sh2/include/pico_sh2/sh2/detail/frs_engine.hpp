@@ -2,39 +2,10 @@
 #pragma once
 
 /// \file frs_engine.hpp
-/// FRS read/write transaction state (SR-3): one operation at a time, over a
-/// record buffer sized by the active profile.
-///
-/// A read streams 0xF3 responses, each carrying up to two words at their own
-/// record offset, until a status says the record is complete or empty. A write
-/// sends the 0xF7 request then paces 0xF6 data reports, one per 0xF5 status,
-/// until the hub reports completion. Either way the operation ends exactly
-/// once, through a Completion the caller forwards to the consumer -- including
-/// when the session abandons it because the hub reset.
-///
-/// A read response names the record it carries (1000-3625 §6.3.7, Figure 39).
-/// One naming another record is the tail of an earlier read that ended here
-/// first, typically by timing out; it is reported as stray and never written
-/// into the running read's buffer. A record longer than the buffer ends the
-/// read with TABLE_FULL rather than completing it short.
-///
-/// Only one FRS operation may be in progress at a time (§6.3.7), and one the
-/// engine ended itself -- past its deadline, for a full buffer, or because its
-/// next data report could not be queued -- may still be running on the hub.
-/// So the engine then holds: a new operation is refused BUSY, and a response
-/// to the ended one is stray, until the hub ends it with a status of its own,
-/// or for one more FRS timeout if it never does. Without the hold, the tail of
-/// a timed-out read would complete a retry of the same record.
-///
-/// A completed read must cover every word below its highest. Whether the hub
-/// may answer a read non-densely is UNCONFIRMED (FW-5; §6.3.7 does not say),
-/// and a gap is what a dropped response leaves, so the read ends PROTOCOL
-/// rather than delivering a word nobody sent.
-///
-/// The engine owns the transaction and the buffer; counters, the consumer's FRS
-/// sink, and the diagnostics hook stay with Session.
-///
-/// This is an internal collaborator of Session, not public API.
+/// FRS operation state over a bounded record buffer; only one FRS operation may
+/// run at a time (1000-3625 §6.3.7).
+/// Completed reads must cover every word below their highest (SR-3).
+/// Non-dense hub reads are UNCONFIRMED (1000-3625 §6.3.7, FW-5).
 
 #include <algorithm>
 #include <array>
@@ -57,10 +28,8 @@ class FrsEngine {
    public:
     enum class Phase : std::uint8_t { IDLE, READING, WRITING };
 
-    /// The end of an operation. `finished` is false while the operation is
-    /// still running, in which case the other fields carry nothing. `words` is
-    /// empty for a write and valid only for the duration of the caller's
-    /// handling.
+    /// Completion with borrowed words, empty for writes and valid during
+    /// handling. When finished is false, the other fields carry no result.
     struct Completion {
         bool finished = false;
         Sh2Error status = Sh2Error::NONE;
@@ -90,8 +59,7 @@ class FrsEngine {
         if (!queued.ok()) {
             return queued;
         }
-        /// No word of an earlier read survives into this one; one this read
-        /// leaves uncovered ends it PROTOCOL rather than being delivered.
+        /// Prior data is cleared; uncovered words end the read with PROTOCOL.
         buffer_.fill(0);
         covered_.fill(0);
         phase_ = Phase::READING;
@@ -134,18 +102,21 @@ class FrsEngine {
         return Result<void>{};
     }
 
-    /// What became of one response, besides any Completion it produced.
+    /// How a response was handled, for the caller's counters.
     enum class Outcome : std::uint8_t {
-        APPLIED,    ///< Belonged to the running operation.
-        UNROUTED,   ///< No operation of its kind is running.
-        MALFORMED,  ///< Shorter than its report.
-        STRAY,      ///< A response to no running operation: another record's,
-                    ///< or one the engine ended and holds.
+        /// Belonged to the running operation.
+        APPLIED,
+        /// No operation of its kind is running.
+        UNROUTED,
+        /// Shorter than its report.
+        MALFORMED,
+        /// A response to no running operation: another record's, or one the
+        /// engine ended and holds.
+        STRAY,
     };
 
-    /// Handle an FRS Read Response (0xF3). Returns an unfinished Completion
-    /// while more responses are expected; `outcome` says whether the report
-    /// was used, so the caller can count the ones that were not.
+    /// Apply a read response; unfinished means more are expected.
+    /// outcome lets the caller count unused responses.
     Completion on_read_response(std::span<const std::uint8_t> payload,
                                 std::uint64_t now_us, Outcome& outcome) {
         if (phase_ != Phase::READING) {
@@ -185,16 +156,13 @@ class FrsEngine {
         if (status == frs_read_status::BUSY) {
             return finish(Sh2Error::BUSY, 0, status);
         }
-        // SR-3: only no-error and completed carry a read forward. The
-        // deprecated (4, 6, 7) and reserved (9-15) codes are not defined for a
-        // read in progress (1000-3625 §6.3.7), so the read ends rather than
-        // storing the report and waiting out the deadline.
+        // Only NO_ERROR and RECORD_COMPLETED advance a read (SR-3).
+        // Other codes are deprecated or reserved (1000-3625 §6.3.7).
         if (status != frs_read_status::NO_ERROR &&
             status != frs_read_status::RECORD_COMPLETED) {
             return finish(Sh2Error::PROTOCOL, 0, status);
         }
 
-        /// Store this report's words at their offset within the record.
         for (std::size_t word = 0;
              word < data_words && word < FRS_WORDS_PER_REPORT; ++word) {
             const std::size_t index =
@@ -221,7 +189,6 @@ class FrsEngine {
             }
             return finish(Sh2Error::NONE, word_count_, status);
         }
-        /// NO_ERROR: more responses follow.
         return {};
     }
 
@@ -255,14 +222,12 @@ class FrsEngine {
             case frs_write_status::UNRECOGNIZED_TYPE:
                 return finish(Sh2Error::UNSUPPORTED, 0, status);
             case frs_write_status::BUSY:
-                // UNCONFIRMED (FW-5) what follows a busy write status
-                // (1000-3625 §6.3.5 lists the code only), so the write ends
-                // here rather than waiting on a response that may never come.
+                // Further responses after BUSY are UNCONFIRMED (1000-3625
+                // §6.3.5), so end the write here (FW-5).
                 return finish(Sh2Error::BUSY, 0, status);
             default:
-                /// WRITE_FAILED / INVALID_LENGTH / RECORD_INVALID /
-                /// NOT_IN_WRITE_MODE / READ_ONLY / MEMORY_FULL: the write
-                /// cannot complete. The status says which.
+                /// The remaining statuses indicate failure; retain the hub's
+                /// status byte.
                 return finish(Sh2Error::PROTOCOL, 0, status);
         }
     }
@@ -279,9 +244,7 @@ class FrsEngine {
         return finish_and_hold(Sh2Error::TIMEOUT, now_us);
     }
 
-    /// End a running operation with `status`, for a caller that is abandoning
-    /// it; an unfinished Completion when nothing was running. The engine is
-    /// idle afterwards either way.
+    /// Abandon and become idle; unfinished means no operation was running.
     Completion abandon(Sh2Error status) {
         if (!busy()) {
             reset();
@@ -315,8 +278,8 @@ class FrsEngine {
         return finish(status, 0);
     }
 
-    /// A read response while a read is held: stray, and the end of the hold
-    /// when it is the held record's last.
+    /// Held-read replies are stray; a terminal reply for its record releases
+    /// the hold.
     Outcome release_read(std::span<const std::uint8_t> payload) {
         if (payload.size() < FRS_READ_RESPONSE_SIZE) {
             return Outcome::MALFORMED;
@@ -330,9 +293,7 @@ class FrsEngine {
         return Outcome::STRAY;
     }
 
-    /// A write status while a write is held: stray, and the end of the hold
-    /// unless it says more follows (asks for data, or reports the record
-    /// valid ahead of its write completing).
+    /// Held-write replies are stray; a terminal status releases the hold.
     Outcome release_write(std::span<const std::uint8_t> payload) {
         if (payload.size() < FRS_WRITE_RESPONSE_SIZE) {
             return Outcome::MALFORMED;

@@ -1,7 +1,5 @@
-# The test tree mirrors src/ (CXX-13.2), so src/ is exactly the shippable
-# surface: an install, footprint, lint or coverage rule over it needs no test
-# exclusion. One directory per module, added after src/ so every
-# pico_sh2::<module> target the tests link already exists.
+# Tests mirror src/ (docs/orientation.md, Commands).
+# src/ is added first so linked module targets already exist.
 
 add_subdirectory(core)
 add_subdirectory(shtp)
@@ -12,7 +10,6 @@ add_subdirectory(sh2)
 # its tests. Mirrors the guard on src/testing/.
 if(NOT PICO_SH2_BUILD_FIRMWARE)
     add_subdirectory(testing)
-    # The documents' examples, compiled from the documents (EN-03.5). None
-    # needs the SDK, so the host tree is the only one that builds them.
+    # Document examples need no SDK and compile in the host tree.
     add_subdirectory(docs)
 endif()

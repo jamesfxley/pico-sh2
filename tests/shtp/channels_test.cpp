@@ -6,9 +6,8 @@
 namespace pico_sh2::shtp {
 namespace {
 
-// SR-10: the command channel is the one number SHTP fixes (1000-3535 §5.1), so
-// it is usable before any advertisement; SH-2's roles are not, because their
-// base is the hub's to choose (1000-3600 §2.3).
+// The fixed SHTP command channel is usable before advertisement; SH-2 roles
+// are unbound (1000-3535 §5.1, 1000-3600 §2.3; SR-10).
 TEST(ChannelMap, OnlyTheCommandChannelIsKnownUpFront) {
     const ChannelMap map;
     EXPECT_EQ(map.number_of(ChannelRole::COMMAND).value_or(0xFF),
@@ -24,8 +23,7 @@ TEST(ChannelMap, SeedingBindsARoleAndReversesIt) {
     EXPECT_EQ(map.number_of(ChannelRole::DEVICE).value_or(0xFF), 1);
     EXPECT_EQ(map.role_of(1).value_or(ChannelRole::COMMAND),
               ChannelRole::DEVICE);
-    // A number nothing claims has no role, which is what makes an unexpected
-    // channel countable rather than routable.
+    // An unclaimed number has no role and can be counted as unrouted.
     EXPECT_FALSE(map.role_of(9).has_value());
 }
 
@@ -48,9 +46,8 @@ TEST(ChannelMap, ASeedDoesNotOverrideWhatWasLearned) {
     EXPECT_EQ(map.number_of(ChannelRole::CONTROL).value_or(0xFF), 7);
 }
 
-// SR-5/SR-7: a hub that reset may come back at a different base, so learned
-// numbers are dropped — but the seed survives, which is what keeps a reset
-// requestable while the session is short of ready.
+// Forgetting learned numbers falls back to the seed, so reset stays possible
+// before ready (SR-5, SR-7).
 TEST(ChannelMap, ForgettingLearnedFallsBackToTheSeed) {
     ChannelMap map;
     map.seed(ChannelRole::DEVICE, 1);
@@ -77,8 +74,7 @@ TEST(ChannelMap, CompleteOnlyOnceEveryRoleHasANumber) {
     EXPECT_TRUE(map.complete());
 }
 
-// The base is the hub's choice, so a map bound to a shifted block must be just
-// as usable as one at the base a common part happens to use.
+// A map bound at a shifted channel base must remain usable.
 TEST(ChannelMap, BindsAtAnyBase) {
     ChannelMap map;
     map.learn(ChannelRole::DEVICE, 10);

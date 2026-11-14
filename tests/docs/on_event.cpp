@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-// An event handler, with the reader's own use of the sample declared, and
-// checked against the sink the guide binds it to.
+// Compiles the event handler and checks its sink signature.
 #include <pico_sh2/pico_sh2.hpp>
 #include <type_traits>
 #include <variant>

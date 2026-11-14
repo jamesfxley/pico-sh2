@@ -2,13 +2,9 @@
 #pragma once
 
 /// \file command.hpp
-/// SH-2 command request/response (1000-3625 §6.3.8-6.3.9, §6.4). A
-/// command (0xF2) is a special operation the host asks the hub to perform; the
-/// hub answers with one or more command responses (0xF1). Exactly one command
-/// is outstanding at a time; responses are correlated by the request's sequence
-/// number, echoed in the response's command-sequence-number field. A response
-/// whose command byte has its MSB set is unsolicited (e.g. the post-reset
-/// Initialize response) and never completes a pending command (SR-2).
+/// SH-2 command reports (1000-3625 §6.3.8–6.3.9, §6.4).
+/// At most one command is outstanding; unsolicited responses never complete it
+/// (SR-2).
 
 #include <array>
 #include <cstddef>
@@ -55,7 +51,7 @@ inline constexpr std::uint8_t COUNTER = 0x02;
 /// Tare the current orientation, persist a tare, or set reorientation
 /// (§6.4.3).
 inline constexpr std::uint8_t TARE = 0x03;
-/// Reinitialize the sensor hub components (§6.4.4). Its response is also sent
+/// Reinitialise the sensor hub components (§6.4.4). Its response is also sent
 /// unsolicited after a reset.
 inline constexpr std::uint8_t INITIALIZE = 0x04;
 /// Save the dynamic calibration data to flash (§6.4.5).
@@ -84,16 +80,13 @@ struct CommandResponse {
     std::array<std::uint8_t, COMMAND_MAX_RESULTS> results{};
 };
 
-/// A command request's sequence number, echoed by its response. Its own type
-/// so that serialize_command_request() cannot take it and the command the
-/// wrong way round: both are a byte.
+/// Distinct sequence type to prevent swapping it with the byte-sized command.
 struct CommandSequence {
     std::uint8_t value;  ///< The sequence number itself.
 };
 
-/// Serialize a command request into `out`. The first COMMAND_MAX_PARAMS
-/// parameter bytes are copied and the rest of the field is zero-filled; a
-/// caller refuses a longer `params` before reaching here.
+/// Serialise up to COMMAND_MAX_PARAMS bytes, zero-filling unused parameters.
+/// The caller rejects longer params before this call.
 constexpr std::size_t serialize_command_request(
     CommandSequence sequence, std::uint8_t command,
     std::span<const std::uint8_t> params,

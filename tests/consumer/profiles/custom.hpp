@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// A consumer's own sizing profile (AR-5), reached through
-// PICO_SH2_PROFILE_HEADER by the declared consumer case "custom".
+// The custom consumer case selects this profile through PICO_SH2_PROFILE_HEADER
+// (AR-5).
 #pragma once
 #include <cstddef>
 

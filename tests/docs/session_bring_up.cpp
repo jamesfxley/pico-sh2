@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Bringing a session up, over the transport, event handler and context the
-// guide leaves to the reader.
+// Compiles session startup with the guide's transport, sink and context.
 #include <pico_sh2/pico_sh2.hpp>
 
 namespace doc_examples {

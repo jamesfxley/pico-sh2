@@ -1,23 +1,15 @@
 // SPDX-License-Identifier: MIT
-// SH-2 session implementation: the drain loop, cargo routing, and the wiring
-// between the startup sequencer (SR-1), the command and FRS engines (SR-2,
-// SR-3), the input router (SR-4), and the outbound path. Unexpected-reset
-// recovery (SR-5) and the normative counter set (OR-1) live here because both
-// span every collaborator.
+// Session wiring for startup, commands, FRS, input, reset recovery and counters
+// (SR-1, SR-2, SR-3, SR-4, SR-5, OR-1).
 #include "pico_sh2/sh2/session.hpp"
 
 #include "pico_sh2/pico_sh2.hpp"
 #include "pico_sh2/sh2/profile.hpp"
 #include "pico_sh2/sh2/startup_phase.hpp"
 
-// The advertised version and project(pico_sh2 VERSION ...) are two records of
-// one fact. Bumping either alone stops the build here.
-//
-// The constants live in the umbrella header, whose target is INTERFACE and has
-// no translation unit of its own; this is the nearest compiled one. The CMake
-// values arrive PRIVATE on this target, so they reach no installed consumer.
-// A host test asserts the same pair, but that test is skipped on every
-// configure with tests off -- which is every firmware and every consumer build.
+// Bind the public version to CMake, including builds with tests disabled.
+// The umbrella target has no translation unit; private definitions reach this
+// one.
 static_assert(pico_sh2::VERSION_MAJOR == PICO_SH2_CMAKE_VERSION_MAJOR);
 static_assert(pico_sh2::VERSION_MINOR == PICO_SH2_CMAKE_VERSION_MINOR);
 static_assert(pico_sh2::VERSION_PATCH == PICO_SH2_CMAKE_VERSION_PATCH);
@@ -82,14 +74,8 @@ Session::Session(IHalTransport& hal, SessionTiming timing,
       channels_(channels),
       engine_(reassembly_),
       startup_(timing) {
-    // caller_binding() here is the library's own view; `binding` is the
-    // caller's, evaluated in the caller's translation unit. They differ only if
-    // the two were compiled with different profile macros, in which case they
-    // disagree about the layout of every type crossing this boundary. Nothing
-    // after this point would be well defined.
-    //
-    // A consumer that wants to see this coming rather than meet it as a bare
-    // abort() on a nosys target tests binding_matches() and logs first.
+    // The default argument carries the caller's profile. A mismatch can corrupt
+    // memory during member initialisation, before this check.
     if (binding != caller_binding()) {
         std::abort();
     }
@@ -102,22 +88,16 @@ Session::Session(IHalTransport& hal, SessionTiming timing,
 
 void Session::begin() {
     held_initialize_.reset();
-    // Timing has no defaults, so an unset SessionTiming arrives here as zeros.
-    // Releasing reset immediately and arming deadlines that expire on the same
-    // tick would present as a hub that never answers, so name the real fault
-    // instead of hanging in a phase that cannot complete.
+    // Zero timing would release reset or expire a deadline immediately.
     if (!timing_.valid()) {
         fail(Sh2Error::INVALID_ARGUMENT);
         return;
     }
-    // A sink that called this is inside service(), which checks the
-    // generation after every sink it calls and abandons the traffic it was
-    // processing when it moves.
+    // service() checks this after each sink to stop traffic from the previous
+    // run.
     ++generation_;
-    // Every collaborator is reset, so nothing from a previous run — a queued
-    // request, an outstanding command, a half-read FRS record — survives into
-    // the new one. An FRS operation dropped here reports nothing: the caller
-    // asked for the restart and already knows what it abandons.
+    // Explicit restart discards FRS work without completion; the caller
+    // requested it.
     channels_.forget_learned();
     engine_.reset();
     commands_.reset();
@@ -139,24 +119,19 @@ void Session::fail(Sh2Error error) {
 bool Session::restart_handshake(LearnedChannels learned) {
     const std::uint32_t generation = generation_;
     ++counters_.resets;
-    // A hub that reset may come back with a different channel base (1000-3600
-    // §2.3 lets N be chosen at run time), so what the last advertisement taught
-    // is not carried across one -- unless the caller has just seen the hub
-    // speak on its learned device channel, which is N itself. The consumer's
-    // seed survives either way, which is what keeps a reset requestable (SR-7).
+    // Channel bases can change at reset (1000-3600 §2.3), unless the device
+    // channel just received confirms the learned base. Consumer seeds survive
+    // (SR-7).
     if (learned == LearnedChannels::FORGET) {
         channels_.forget_learned();
     }
     engine_.reset();
     commands_.reset();
-    // An Initialize held for a reset belongs to the reset that follows it;
-    // this restart either is that reset, which took it, or is another (SR-5).
+    // A held Initialize belongs only to the reset that follows it (SR-5).
     held_initialize_.reset();
-    // An FRS operation ends exactly once, through the FRS sink (SR-3), so one
-    // the reset cut off is reported rather than dropped. An outstanding
-    // command has no failure path through its sink; command_pending() falls
-    // and the reset sink below is its notice, as the diagnostics hook is for
-    // its timeout.
+    // Complete interrupted FRS work once (SR-3).
+    // Commands have no error completion; the reset sink signals their
+    // abandonment.
     const detail::FrsEngine::Completion abandoned =
         frs_.abandon(Sh2Error::HUB_RESET);
     tx_.reset();
@@ -174,8 +149,7 @@ bool Session::restart_handshake(LearnedChannels learned) {
 }
 
 void Session::service() {
-    // A sink runs inside service(). Draining again from one would overwrite
-    // the transfer the outer pass is still delivering from.
+    // A nested drain would overwrite the transfer still being delivered.
     if (in_service_ || state_ == SessionState::IDLE ||
         state_ == SessionState::FAULTED) {
         return;
@@ -199,18 +173,13 @@ void Session::service_pass() {
     drain_transfers();
     mirror_counters();
 
-    // A bus error during drain_transfers() already faulted the session. Do not
-    // write to a transport that has just failed, and do not re-fault it (which
-    // would overwrite fault() and miscount a startup timeout) on a
-    // coincidentally-elapsed phase deadline. A sink that called begin() has
-    // started a run this pass's timings do not belong to.
+    // Stop after a fault to preserve its error and phase; stop after begin()
+    // because this pass's traffic and timings belong to the previous run.
     if (state_ == SessionState::FAULTED || generation_ != generation) {
         return;
     }
 
-    // request_reset() is the one request allowed before READY (SR-7), so the
-    // flush cannot sit inside the READY branch below: its cargo would be staged
-    // and never written, and the next begin() would discard it.
+    // Flush before READY too, so an early reset request reaches the hub (SR-7).
     const detail::TxPath::Flushed flushed = tx_.flush(engine_, hal());
     counters_.cargoes_out += flushed.written;
     if (flushed.write_refused) {
@@ -248,23 +217,15 @@ void Session::service_pass() {
 void Session::drain_transfers() {
     drain_generation_ = generation_;
     std::size_t drained = 0;
-    // The bound is the profile's (AR-3): it guarantees termination even if a
-    // HAL reports data_ready() on a stuck-low HINTN, and it is a knob rather
-    // than a constant here because it is the caller's latency it bounds.
+    // The transfer limit bounds drain latency with a stuck-low HINTN (AR-3).
     while (hal().data_ready() &&
            drained < ActiveProfile::MAX_TRANSFERS_PER_SERVICE) {
         ++drained;
         auto read = hal().read_transfer(rx_staging_);
         if (!read.ok()) {
-            // A read only issues behind a data-ready indication, so a transport
-            // error in READY is the hub having left the bus between indicating
-            // and answering — what a reset looks like to a transport able to
-            // report one at all (SR-5). Restart the handshake rather than
-            // faulting: the hub re-advertises when it returns, and a transport
-            // that is genuinely dead never does, so the advertisement deadline
-            // faults it as the TIMEOUT it is. During startup the hub is already
-            // expected to be silent, so an error there is the fault it appears
-            // to be.
+            // A read error in READY starts reset recovery (SR-5). An absent
+            // advertisement then times out. During startup, the read error
+            // faults directly.
             if (state_ == SessionState::READY) {
                 ++counters_.transport_restarts;
                 restart_handshake();
@@ -275,21 +236,14 @@ void Session::drain_transfers() {
         }
         const std::span<const std::uint8_t> transfer(rx_staging_.data(),
                                                      read.value().length);
-        // The engine keeps the lead transfer's edge and returns it with the
-        // completed cargo, so the framing rules stay in one place. A malformed
-        // header or a dropped cargo is already counted in the engine's stats,
-        // which the mirror picks up.
+        // Framing retains the lead edge and counts malformed or dropped input;
+        // mirror_counters() publishes those counts.
         (void)engine_.ingest(transfer, read.value().intn_edge_us);
-        // Routing happens in on_cargo as the engine completes cargoes. A
-        // startup phase may have advanced or a reset may have restarted the
-        // handshake; either way, keep draining what the hub already offered --
-        // unless a sink called begin(), which asserted reset on the hub whose
-        // traffic this is.
+        // Keep draining after phase changes, unless a sink called begin().
         if (generation_ != drain_generation_) {
             return;
         }
-        // SR-1: a fault stays observable. A later transfer in the same pass
-        // must not carry the handshake on past it and set READY over it.
+        // A later transfer must not overwrite a fault with READY (SR-1).
         if (state_ == SessionState::FAULTED) {
             return;
         }
@@ -314,11 +268,9 @@ void Session::mirror_counters() {
 }
 
 void Session::on_cargo(const shtp::ShtpEngine::Cargo& cargo) {
-    // A cargo is routed by what its channel is *for*, which the hub told us in
-    // its advertisement. Before that — or on a channel no application claimed —
-    // there is no role to route to, so the cargo is counted rather than guessed
-    // at. The command channel is the exception SHTP fixes (1000-3535 §5.1), so
-    // the advertisement itself always has somewhere to arrive.
+    // Routing uses advertised roles and counts unknown channels. Channel 0 is
+    // fixed, so advertisements can arrive before roles are learned (1000-3535
+    // §5.1).
     const std::optional<shtp::ChannelRole> role =
         channels_.role_of(static_cast<std::uint8_t>(cargo.channel));
     if (!role.has_value()) {
@@ -354,13 +306,9 @@ void Session::on_cargo(const shtp::ShtpEngine::Cargo& cargo) {
     }
 }
 
-// --- startup handshake -------------------------------------------------------
-
 void Session::handle_command_channel(std::span<const std::uint8_t> payload) {
-    // Byte 0 of a channel-0 read cargo is the SHTP response code (1000-3535
-    // §5.1). Response 0 is the advertisement; Response 1 is the hub's Error
-    // List, sent on its own for any recoverable SHTP error (§5.1.2.1), which is
-    // a report and not a re-advertisement; 2-255 are reserved (§5.1.3).
+    // Channel 0 starts with a response code; Error List is not an advertisement
+    // (1000-3535 §5.1, §5.1.2.1, §5.1.3).
     if (payload.empty()) {
         ++counters_.protocol_errors;
         return;
@@ -379,24 +327,19 @@ void Session::handle_command_channel(std::span<const std::uint8_t> payload) {
 }
 
 void Session::handle_advertisement(std::span<const std::uint8_t> payload) {
-    // An empty command-channel cargo is not an advertisement, which is a
-    // multi-entry TLV list. Never let it advance the handshake or be mistaken
-    // for a re-advertisement; a real advertisement follows.
+    // An advertisement needs TLV entries; an empty body cannot advance startup.
     if (payload.empty()) {
         ++counters_.protocol_errors;
         return;
     }
-    // An advertisement after READY means the hub reset (it re-advertises first,
-    // 1000-3535 §2.3.1). Restart before consuming it, so a malformed one leaves
-    // the session waiting for a clean advertisement rather than claiming to be
-    // READY over a table that has already been re-seeded.
+    // Restart before parsing a re-advertisement (1000-3535 §2.3.1),
+    // so a malformed one cannot leave READY over a reseeded table.
     if (state_ == SessionState::READY) {
         if (!restart_handshake()) {
             return;
         }
     } else if (startup_.phase() != StartupPhase::WAIT_ADVERTISEMENT) {
-        // Advertisement arriving out of its startup phase: treat it as the
-        // start of a (re)advertisement rather than dropping it.
+        // An out-of-phase advertisement starts fresh tables.
         engine_.reset();
         input_.reseed_lengths();
     }
@@ -407,21 +350,15 @@ void Session::handle_advertisement(std::span<const std::uint8_t> payload) {
         shtp::ChannelSink::bind<Session, &Session::on_advertised_channel>(
             this));
     if (!applied.ok()) {
-        // A malformed advertisement is not fatal; wait for a clean one. The
-        // parse applies each entry as it reads it and rejects a truncated one
-        // afterwards, so what it already wrote has to be discarded here
-        // (advertisement.hpp) -- otherwise a corrupt length pair emitted before
-        // the truncation outlives the cargo that carried it. forget_learned()
-        // keeps the consumer's seed, which SR-7 depends on.
+        // Parsing can apply entries before finding truncation; discard those
+        // changes. Keep consumer seeds so early reset requests still work
+        // (SR-7).
         ++counters_.protocol_errors;
         channels_.forget_learned();
         input_.reseed_lengths();
         return;
     }
-    // Without every role bound there is no way to route control or input, so
-    // an advertisement that names fewer channels than SH-2 defines leaves the
-    // handshake where it is rather than advancing into a session that cannot
-    // carry traffic.
+    // Incomplete channel roles cannot route SH-2 traffic.
     if (!channels_.complete()) {
         ++counters_.protocol_errors;
         channels_.forget_learned();
@@ -447,14 +384,10 @@ void Session::handle_reset_complete(std::span<const std::uint8_t> payload) {
         ++counters_.protocol_errors;
         return;
     }
-    // Reset-complete without a preceding re-advertisement: still a reset, and
-    // the advertisement it should have followed was missed. What that
-    // advertisement teaches -- the channel map, the report lengths -- is not
-    // recoverable any other way, so the session asks for it: SHTP Command 0
-    // with P0 = 1, the whole hub (1000-3535 §5.1.1).
-    // It arrived on the learned device channel, so the hub is numbered as it
-    // was and the learned map still routes the Initialize response that
-    // follows; the requested advertisement replaces the map when it lands.
+    // A reset-complete without the advertisement it should have followed
+    // triggers a request for channel and length tables (1000-3535 §5.1.1). The
+    // learned device channel confirms the base, so keep the map to route
+    // Initialize until the advertisement replaces it.
     if (state_ == SessionState::READY) {
         // Taken before the restart, which forgets it (SR-5).
         const std::optional<HeldInitialize> held = held_initialize_;
@@ -462,14 +395,12 @@ void Session::handle_reset_complete(std::span<const std::uint8_t> payload) {
             return;
         }
         startup_.on_reset_complete_without_advertisement();
-        // The restart emptied the TX queue, so the request fits; were it
-        // refused, the advertisement deadline would end the wait.
+        // The restart emptied the queue; an enqueue error would leave the
+        // advertisement deadline to end the wait.
         static_cast<void>(
             tx_.enqueue(shtp::COMMAND_CHANNEL, GET_ADVERTISEMENT_REQUEST));
-        // SR-5: the hub's two announcements are not ordered, so its
-        // Initialize response may already have arrived while the session was
-        // READY. One recent enough to belong to this reset -- inside the
-        // Initialize phase's own timeout -- is taken rather than waited for.
+        // Initialize can precede reset-complete while READY. Reuse it only
+        // within its phase timeout (SR-5).
         if (held.has_value() &&
             hal().now_us() - held->at_us <= timing_.initialize_timeout_us) {
             if (!held->ok) {
@@ -497,9 +428,8 @@ void Session::handle_initialize(std::span<const std::uint8_t> payload) {
         ++counters_.unrouted_cargoes;
         return;
     }
-    // Expect the unsolicited Initialize response: a command response (0xF1)
-    // whose command byte is 0x84 and whose R0 result is the status. Any other
-    // control report keeps us waiting.
+    // Only unsolicited Initialize advances this phase; other reports leave it
+    // waiting.
     if (payload.size() < COMMAND_RESPONSE_SIZE ||
         payload[0] != COMMAND_RESPONSE_REPORT ||
         payload[COMMAND_RESP_COMMAND] != INITIALIZE_UNSOLICITED) {
@@ -516,10 +446,7 @@ void Session::handle_initialize(std::span<const std::uint8_t> payload) {
     }
 }
 
-// --- READY-state control routing ---------------------------------------------
-
-// The seeded lengths walk_control() splits on are the sizes the handlers
-// parse; two copies of one number in two modules are bound here.
+// Bind seeded report lengths to the sizes their handlers parse.
 static_assert(reports::ReportLengthTable::seeded()
                   .length_of(COMMAND_RESPONSE_REPORT)
                   .value() == COMMAND_RESPONSE_SIZE);
@@ -537,11 +464,8 @@ static_assert(reports::ReportLengthTable::seeded()
                   .value() == FLUSH_REPORT_SIZE);
 
 void Session::walk_control(std::span<const std::uint8_t> cargo) {
-    // A cargo from the hub may hold several reports, each as long as the
-    // report-length table says (1000-3600 §2.3). A report whose ID has no
-    // length leaves no way to find the next one, so it and the rest of the
-    // cargo go to the handler as one, which counts it; so does a last report
-    // shorter than its length.
+    // A cargo can contain several reports (1000-3600 §2.3). Without a length,
+    // no next boundary is known; pass the remainder to the handler to count it.
     const std::uint32_t generation = generation_;
     while (!cargo.empty()) {
         const Result<std::uint8_t> length =
@@ -631,9 +555,7 @@ void Session::account_frs(const detail::FrsEngine::Completion& completion,
 }
 
 void Session::on_event(const reports::SensorEvent& event) {
-    // A cargo's events are delivered one after another from inside the walk.
-    // Once a sink has called begin(), the rest of that cargo belongs to the
-    // hub incarnation it restarted.
+    // A sink's begin() invalidates the rest of the cargo being walked.
     if (generation_ == drain_generation_) {
         event_sink_(event);
     }
@@ -656,10 +578,8 @@ void Session::handle_command_response(std::span<const std::uint8_t> payload) {
         response.results[i] = payload[COMMAND_RESP_RESULTS + i];
     }
 
-    // An unsolicited Initialize while READY may be the first of a reset's two
-    // announcements, ahead of the reset-complete (SR-5); remember it for the
-    // handshake that reset-complete would restart. It still reaches the
-    // command sink, as any unsolicited response does.
+    // An Initialize can precede reset-complete and is retained (SR-5).
+    // It still reaches the command sink like other unsolicited responses.
     if (state_ == SessionState::READY &&
         command_byte == INITIALIZE_UNSOLICITED) {
         held_initialize_ = HeldInitialize{
@@ -685,20 +605,16 @@ void Session::handle_feature_response(std::span<const std::uint8_t> payload) {
 }
 
 void Session::deliver_frs(const detail::FrsEngine::Completion& completion) {
-    // SR-3: the words are a view of the engine's one record buffer, which a
-    // new request would clear. A read the sink asks for is held until it
-    // returns, so the view it was handed stays valid for the whole call. A
-    // held read that cannot be sent was still accepted, so it ends at the
-    // sink like every other read; that completion carries no words, so it
-    // holds nothing more and the loop runs at most twice.
+    // Deferring re-entrant reads keeps the sink's borrowed words valid (SR-3).
+    // A deferred enqueue error completes without words, so this loop runs at
+    // most twice.
     detail::FrsEngine::Completion current = completion;
     for (;;) {
         if (current.status == Sh2Error::NONE) {
             ++counters_.frs_completions;
         }
-        // Only a completion carrying words has a record to protect; a read
-        // asked for from any other is sent at once, so a sink retrying on
-        // failure gets its error back rather than another call.
+        // With no borrowed words, a read the sink requests is sent at once, so
+        // a retry gets its error directly.
         delivering_frs_record_ = !current.words.empty();
         frs_sink_(current.status, current.type, current.words,
                   current.device_status);
@@ -726,13 +642,8 @@ void Session::deliver_frs(const detail::FrsEngine::Completion& completion) {
     }
 }
 
-// --- host->hub requests ------------------------------------------------------
-
 SessionBinding library_binding() noexcept {
-    // Compiled here, in the library's own translation unit, so it reports the
-    // archive's profile rather than the caller's. binding_matches() compares
-    // the two and is the check a consumer can make before the constructor's
-    // abort() makes it for them.
+    // This translation unit uses the library archive's profile.
     return Session::caller_binding();
 }
 
@@ -789,8 +700,7 @@ Result<void> Session::frs_read(std::uint16_t frs_type) {
     if (!ready()) {
         return Sh2Error::NOT_READY;
     }
-    // From inside the FRS sink while it holds a record: held until the sink
-    // returns (deliver_frs).
+    // The sink still borrows the record buffer; defer its read until return.
     if (delivering_frs_record_) {
         if (deferred_frs_read_.has_value()) {
             return Sh2Error::BUSY;
@@ -807,11 +717,8 @@ Result<void> Session::frs_write(std::uint16_t frs_type,
     if (!ready()) {
         return Sh2Error::NOT_READY;
     }
-    // From inside the FRS sink while it holds a record a write is refused:
-    // it could only be sent
-    // after the sink returns, by which time a record in the sink's own frame
-    // is gone, and the buffer it would be copied into holds the record being
-    // delivered.
+    // A write from inside the sink is refused: the destination buffer holds the
+    // delivered record, and the write's source might not outlive the sink.
     if (delivering_frs_record_) {
         return Sh2Error::BUSY;
     }

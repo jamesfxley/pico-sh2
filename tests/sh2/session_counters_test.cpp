@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT
-// OR-1: the counter set is generated from session_counters.def, so the struct
-// and the visitor cannot disagree about what counters exist, and each counter
-// moves only on the event it names.
+// Each generated counter changes only on the event it names (OR-1).
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -26,10 +24,6 @@
 
 namespace {
 
-// Named one at a time rather than with a using-directive: this suite reaches
-// for only a handful of helpers, and the inline suppression a directive would
-// need is budget spent for nothing. Each is named in the namespace that defines
-// it rather than the fixture that re-exports it.
 using pico_sh2::sh2_test::drive_to_ready;
 using pico_sh2::sh2_test::EventCapture;
 using pico_sh2::sh2_test::make_session;
@@ -94,25 +88,16 @@ TEST(SessionCounters, EveryCounterHasAUniqueNameAndADescription) {
     }
     std::vector<std::string> unique = names;
     std::ranges::sort(unique);
-    // std::ranges::unique returns the subrange of duplicates to drop, where
-    // std::unique returns a single iterator; erase takes both ends of it.
+    // ranges::unique returns both ends of the duplicate subrange for erase().
     const auto duplicates = std::ranges::unique(unique);
     unique.erase(duplicates.begin(), duplicates.end());
     EXPECT_EQ(unique.size(), names.size());
 }
 
-// --- OR-1: each counter moves only on the event it names ---
-//
-// The cases below assert on the *whole* moved set rather than on the one
-// counter each is about. Asserting `flushes_completed == 1` would pass just as
-// well if the same event also moved three unrelated counters, which is the half
-// of OR-1 that says a counter does not move on an event it does not name.
-// Driving the set from for_each_counter means a counter added to
-// session_counters.def is covered here without touching this helper.
+// Each case checks all changed counters, catching unrelated increments (OR-1).
+// for_each_counter includes newly added counters (OR-1).
 
-// A calibrated accelerometer report (0x01), the same 10-byte layout the decoder
-// suite uses. Decodes to one event. An array rather than a vector so the
-// namespace-scope initialisation cannot throw.
+// One calibrated accelerometer event; array initialisation cannot throw.
 constexpr std::array<std::uint8_t, 10> ACCEL_REPORT = {
     0x01, 0x2A, 0x03, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0xFF};
 
@@ -150,11 +135,7 @@ TEST(SessionCounters, AnOversizeCargoMovesOnlyReassemblyDrops) {
     drive_to_ready(hub, session);
 
     const SessionCounters before = session.counters();
-    // A lead header declaring one byte more cargo than the active profile's
-    // reassembly buffer holds, so it is dropped whole rather than truncated.
-    // Derived from the profile rather than written as a literal: the two
-    // profiles size this buffer differently, and any fixed length is oversize
-    // for only one of them.
+    // One byte beyond this profile's reassembly capacity; the profiles differ.
     const std::size_t declared = pico_sh2::ActiveProfile::MAX_CARGO_LEN +
                                  pico_sh2::shtp::HEADER_SIZE + 1;
     hub.queue_transfer(
@@ -503,7 +484,7 @@ TEST(SessionCounters, AnErrorListMovesCargoesInAndHubErrorLists) {
 
 }  // namespace
 
-// OR-1: every visited counter is unsigned 32-bit and wraps modulo 2^32.
+// Every visited counter is unsigned 32-bit and wraps modulo 2^32 (OR-1).
 TEST(SessionCounters, EveryEnumeratedCounterIsUnsigned32Bit) {
     const pico_sh2::SessionCounters counters;
     std::size_t visited = 0;

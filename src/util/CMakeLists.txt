@@ -15,8 +15,5 @@ target_include_directories(pico_sh2_util INTERFACE
 
 target_compile_features(pico_sh2_util INTERFACE cxx_std_20)
 
-# PUBLIC: Result is an alias for pico_util::Result and the byte accessors are
-# pico_util's, so its headers reach a consumer through this library's own.
-# Every other module links pico_sh2::util PUBLIC, so this is the one place the
-# base layer has to be named.
+# Public headers expose pico_util::Result; other modules inherit this dependency.
 target_link_libraries(pico_sh2_util INTERFACE pico_util::core)

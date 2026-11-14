@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Wire-format tests for the control-channel report builders and parsers. These
-// are pure functions over bytes, exercised here directly against the layouts in
-// the SH-2 Reference Manual rather than only through a running session.
+// Control report builders and parsers match the SH-2 Reference Manual layouts.
 #include <gtest/gtest.h>
 
 #include <array>
@@ -22,7 +20,7 @@ namespace {
 using pico_sh2::FeatureConfig;
 using pico_sh2::reports::SensorId;
 
-// --- Set / Get Feature (§6.5.2-6.5.5) ----------------------------------------
+// Set / Get Feature (1000-3625 §6.5.2-6.5.5).
 
 TEST(Feature, SetFeatureLaysOutEveryField) {
     FeatureConfig config;
@@ -51,8 +49,7 @@ TEST(Feature, SetFeatureLaysOutEveryField) {
     EXPECT_EQ(out[16], 0xDE);
 }
 
-// A report interval of zero is how a sensor is disabled, so it must survive the
-// round trip rather than being treated as "unset".
+// A zero interval disables a sensor and must survive the round trip.
 TEST(Feature, ZeroReportIntervalRoundTrips) {
     FeatureConfig config;
     config.sensor = SensorId::ACCELEROMETER;
@@ -87,7 +84,7 @@ TEST(Feature, ResponseParsesBackToTheConfigItEncodes) {
     EXPECT_EQ(parsed.sensor_specific, config.sensor_specific);
 }
 
-// --- Command request (§6.3.8) ------------------------------------------------
+// Command request (1000-3625 §6.3.8).
 
 // The sequence number and the command are both a byte; a call that passes
 // them the wrong way round must not compile.
@@ -117,8 +114,7 @@ TEST(Command, RequestCarriesSequenceCommandAndParameters) {
     EXPECT_EQ(out[5], 0xCC);
 }
 
-// Unsupplied parameters are zero-filled rather than left holding whatever the
-// caller's buffer contained.
+// Unsupplied parameters encode as zero.
 TEST(Command, RequestZeroFillsUnsuppliedParameters) {
     std::array<std::uint8_t, pico_sh2::COMMAND_REQUEST_SIZE> out{};
     out.fill(0xFF);
@@ -141,7 +137,7 @@ TEST(Command, RequestAcceptsNoParameters) {
     }
 }
 
-// --- FRS requests (§6.3.3-6.3.6) ---------------------------------------------
+// FRS requests (1000-3625 §6.3.3-6.3.6).
 
 TEST(Frs, ReadRequestCarriesTheRecordTypeAndZeroesTheRest) {
     std::array<std::uint8_t, pico_sh2::FRS_READ_REQUEST_SIZE> out{};
@@ -178,8 +174,7 @@ TEST(Frs, WriteRequestCarriesTypeAndLength) {
     EXPECT_EQ(out[5], 0xA1);
 }
 
-// A zero-length write request is the documented way to erase a record, so it
-// must encode as such rather than being rejected.
+// A zero-length write erases a record and must encode without rejection.
 TEST(Frs, WriteRequestOfZeroWordsErasesTheRecord) {
     std::array<std::uint8_t, pico_sh2::FRS_WRITE_REQUEST_SIZE> out{};
     pico_sh2::serialize_frs_write_request(
@@ -206,11 +201,8 @@ TEST(Frs, WriteDataCarriesTwoWordsAtTheirOffset) {
     EXPECT_EQ(out[11], 0x05);
 }
 
-// The read response packs the status and the data-word count into one byte;
-// the split is what the FRS engine decodes every response with.
-// The byte as the wire carries it (1000-3625 §6.3.7, Figure 39): data length
-// in bits 7:4, status in bits 3:0. A literal rather than one built from the
-// same constants it checks, so a wrong shift or mask fails here.
+// A literal byte checks data length in bits 7:4 and status in bits 3:0,
+// independently of the constants under test (1000-3625 §6.3.7, Figure 39).
 TEST(Frs, ReadResponseStatusAndLengthShareAByte) {
     constexpr std::uint8_t LENGTH_2_STATUS_3 = 0x23;
     EXPECT_EQ(LENGTH_2_STATUS_3 & pico_sh2::FRS_READ_STATUS_MASK, 3U);
@@ -222,9 +214,7 @@ TEST(Frs, ReadResponseStatusAndLengthShareAByte) {
 
 }  // namespace
 
-// SR-6: a Flush Completed yields the sensor it names, and a report too short
-// to name one yields nothing -- carried in the return type, so a caller cannot
-// read a sensor the report never supplied.
+// Flush Completed yields its sensor ID, or no value if too short (SR-6).
 TEST(Flush, CompletedNamesItsSensorOrNothing) {
     static_assert(std::is_same_v<decltype(pico_sh2::parse_flush_completed({})),
                                  std::optional<SensorId>>);

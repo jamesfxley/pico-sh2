@@ -5,8 +5,7 @@ add_subdirectory(shtp)
 add_subdirectory(reports)
 add_subdirectory(sh2)
 
-# The host-side hub emulator is pointless in firmware images; build it for host
-# consumers and for the test suite only.
+# Build the hub emulator only for hosts; firmware already has a transport.
 if(NOT PICO_SH2_BUILD_FIRMWARE)
     add_subdirectory(testing)
 endif()

@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Session tests: splitting batched input cargoes into events, reconstructing
-// their times (SR-4), and applying decode-time Q overrides (DR-2).
+// Batched input timing and decode-time Q overrides (SR-4, DR-2).
 #include <gtest/gtest.h>
 
 #include <array>
@@ -22,10 +21,6 @@
 
 namespace {
 
-// Named one at a time rather than with a using-directive: this suite
-// reaches for a handful of helpers, and a budget line it does not need
-// is budget spent for nothing. Each is named in the namespace that
-// defines it.
 using pico_sh2::reports::GyroIntegratedSample;
 using pico_sh2::reports::Vec3;
 using pico_sh2::sh2_test::advance_to_wait_advertisement;
@@ -47,8 +42,7 @@ using pico_sh2::StartupPhase;
 TEST(Session, ReportQOverrideRejectsOutOfRangeQ) {
     FakeHub hub;
     Session session = make_session(hub);
-    // A Q beyond the representable maximum would make the decoder's 2^Q shift
-    // undefined; the override is refused rather than installed (DR-2).
+    // A Q beyond the representable range is rejected (DR-2).
     const auto accel =
         static_cast<std::uint8_t>(pico_sh2::reports::SensorId::ACCELEROMETER);
     EXPECT_FALSE(session.set_report_q(
@@ -74,9 +68,7 @@ TEST(Session, DeliversInputEventsWithReconstructedTime) {
                                            &EventCapture::on_event>(&cap));
     drive_to_ready(hub, session);
 
-    // Input cargo on ch3: a base timestamp (delta 10 ticks) then one
-    // accelerometer report with delay 5 ticks. The base delta is subtracted and
-    // the delay added: event_us = edge - 100*10 + 100*5 (SR-4).
+    // Base delta 10 ticks, delay 5 ticks: edge - 100*10 + 100*5 (SR-4).
     std::vector<std::uint8_t> payload = {
         0xFB, 0x0A, 0x00, 0x00, 0x00,  // base delta = 10
         0x01, 0x00, 0x00, 0x05,        // accel: seq, status, delay_lsb = 5
@@ -112,8 +104,7 @@ TEST(Session, ReportQOverrideAppliesAndSurvivesReset) {
     ASSERT_EQ(cap.events.size(), 1U);
     EXPECT_FLOAT_EQ(std::get<Vec3>(cap.events[0].payload).x, 4.0F);
 
-    // An unexpected advertisement restarts the handshake (SR-5); the override
-    // describes the part, not session state, so it must persist.
+    // The override must survive a re-advertisement restart (SR-5, DR-2).
     hub.queue_transfer(frame(0, 1, advertisement()), 0);
     session.service();
     hub.queue_transfer(frame(1, 1, {0x01}), 0);
@@ -137,9 +128,8 @@ TEST(Session, ApplySensorMetadataInstallsRecordQ) {
                                            &EventCapture::on_event>(&cap));
     drive_to_ready(hub, session);
 
-    // An accelerometer sensor-metadata record (0xE302) that publishes Q6 in its
-    // word 7 low half. Applying it overrides the compiled Q8, so X = 256 / 2^6
-    // decodes as 4.0 rather than 1.0 (DR-2).
+    // Metadata word 7 supplies Q6: X = 256 / 2^6 = 4.0,
+    // replacing the compiled Q8 result of 1.0 (DR-2).
     std::array<std::uint32_t, 9> record{};
     record[pico_sh2::reports::METADATA_Q_WORD] = 6;  // Q point 1 = 6, Q2 = 0
     ASSERT_TRUE(session.apply_sensor_metadata(0xE302, record));
@@ -151,7 +141,7 @@ TEST(Session, ApplySensorMetadataInstallsRecordQ) {
     ASSERT_EQ(cap.events.size(), 1U);
     EXPECT_FLOAT_EQ(std::get<Vec3>(cap.events[0].payload).x, 4.0F);
 
-    // A record type outside the decoded set is refused without touching state.
+    // A record outside the decoded set is rejected.
     EXPECT_FALSE(session.apply_sensor_metadata(0x2D3E, record));
 }
 
@@ -164,9 +154,8 @@ TEST(Session, DeliversGyroIntegratedFromTheGyroRvChannel) {
                                            &EventCapture::on_event>(&cap));
     drive_to_ready(hub, session);
 
-    // The gyro-RV input channel: one 14-byte gyro-integrated RV (real = 1.0
-    // Q14, x-rate = 1.0 Q10). Its time is the HINTN edge directly (no delay
-    // field).
+    // One 14-byte gyro-integrated report: real = 1.0 Q14, x-rate = 1.0 Q10.
+    // With no delay field, its time is the HINTN edge.
     std::vector<std::uint8_t> payload = {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // i, j, k = 0
         0x00, 0x40,                          // real = 0x4000 = 1.0 (Q14)
@@ -201,10 +190,8 @@ TEST(Session, InputBeforeReadyIsNotDecoded) {
     EXPECT_GE(session.counters().unrouted_cargoes, 1U);
 }
 
-// SR-9: a sensor configured as a wake-up sensor (1000-3625 §6.5.1, feature
-// flag bit 2) has its reports delivered on the wake input channel instead of
-// the normal one. Both carry identical batched cargoes, so the router must
-// treat them the same.
+// Wake input must follow the normal batched decode and timing path
+// (1000-3625 §6.5.1, feature flag bit 2; SR-9).
 TEST(Session, DeliversInputFromTheWakeChannel) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -230,7 +217,7 @@ TEST(Session, DeliversInputFromTheWakeChannel) {
     EXPECT_EQ(session.counters().unrouted_cargoes, 0U);
 }
 
-// SR-9: outside `ready` the wake channel is counted unrouted, not decoded.
+// Wake input before ready is counted unrouted and produces no event (SR-9).
 TEST(Session, WakeChannelInputBeforeReadyIsNotDecoded) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -250,11 +237,8 @@ TEST(Session, WakeChannelInputBeforeReadyIsNotDecoded) {
     EXPECT_GT(session.counters().unrouted_cargoes, 0U);
 }
 
-// The contract the shipped transports keep and the fake now keeps with them: a
-// hub polled with nothing to say hands back a header-only transfer of zero
-// length, and that read SUCCEEDS. This case is what holds the rule up: both
-// repositories' docs/orientation.md call it load-bearing, and prose is not a
-// gate.
+// A successful idle read with a zero-length header leaves the session ready
+// (docs/usage-guide.md, Supplying a transport).
 TEST(Session, AnIdlePollLeavesAReadySessionUndisturbed) {
     FakeHub hub;
     Session session = make_session(hub);
@@ -265,7 +249,7 @@ TEST(Session, AnIdlePollLeavesAReadySessionUndisturbed) {
     hub.queue_idle_transfer(50'000);
     session.service();
 
-    // Not a fault, not a restart, still READY: an empty bus is normal traffic.
+    // Idle input causes neither a fault nor a restart.
     EXPECT_EQ(session.state(), SessionState::READY);
     EXPECT_FALSE(session.faulted());
     EXPECT_EQ(session.fault(), pico_sh2::Sh2Error::NONE);
@@ -278,8 +262,8 @@ TEST(Session, AnIdlePollLeavesAReadySessionUndisturbed) {
     EXPECT_FALSE(session.faulted());
 }
 
-// The same during startup, which is where a read error is not merely counted
-// but faults the session permanently.
+// A successful idle read also leaves startup waiting; a read error would fault
+// it (docs/usage-guide.md, Supplying a transport).
 TEST(Session, AnIdlePollDuringStartupDoesNotFaultTheSession) {
     FakeHub hub;
     Session session = make_session(hub);
