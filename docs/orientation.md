@@ -34,8 +34,8 @@ owns footprint budgets; `CMakeLists.txt` pins pico-util.
   `refused` checks an invalid profile's build failure; `conflict` checks a
   conflicting selection's configure failure. Their headers are in
   `tests/consumer/profiles/`, and `house.toml` declares the cases.
-- `HOUSE_MATRIX_SANITIZE=ON` enables the host-only ASan+UBSan `sanitize` tree
-  through `PICO_SH2_SANITIZE`.
+- `HOUSE_MATRIX_SANITIZE=address` or `thread` enables the host-only
+  `sanitize` tree through `PICO_SH2_SANITIZE`.
 - The `fuzz` tree uses the pinned Clang to build `pico_sh2_shtp_fuzz`,
   `pico_sh2_report_fuzz` and `pico_sh2_session_fuzz`. CTest runs each for 100000
   inputs from `tests/<module>/corpus/<name>/`. Longer runs are exploratory.

@@ -47,9 +47,11 @@ message = "both select a profile"
 [ci.axes]
 profile = "PICO_SH2_PROFILE"
 
+# ThreadSanitizer cannot run under Docker's default seccomp filter (infra AR-2).
 [[ci.require]]
 group = "build"
-matrix = { build_type = ["Debug", "Release"], sanitize = ["ON"], profile = ["default", "large"] }
+matrix = { build_type = ["Debug", "Release"], sanitize = ["address", "thread"], profile = ["default", "large"] }
+container_options = "--security-opt seccomp=unconfined"
 
 [[ci.require]]
 group = "firmware"
