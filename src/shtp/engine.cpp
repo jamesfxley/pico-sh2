@@ -21,18 +21,16 @@ void ShtpEngine::reset() {
     drop_in_progress();
     rx_sequence_.fill(-1);
     tx_sequence_.fill(0);
-    discarding_.fill(false);
+    discarding_.reset();
 }
 
 void ShtpEngine::count_drop(std::uint8_t channel) {
     ++stats_.reassembly_drops;
-    if (channel < MAX_TRACKED_CHANNELS) {
-        discarding_[channel] = true;
-    }
+    discarding_[channel] = true;
 }
 
 bool ShtpEngine::discarding(std::uint8_t channel) const {
-    return channel < MAX_TRACKED_CHANNELS && discarding_[channel];
+    return discarding_[channel];
 }
 
 void ShtpEngine::drop_in_progress() {
@@ -102,9 +100,7 @@ Result<void> ShtpEngine::ingest_lead(const ShtpHeader& header,
                                      std::span<const std::uint8_t> payload,
                                      std::uint64_t edge_us) {
     // A new cargo. Any in-progress cargo was interrupted.
-    if (header.channel < MAX_TRACKED_CHANNELS) {
-        discarding_[header.channel] = false;
-    }
+    discarding_[header.channel] = false;
     if (in_progress_) {
         count_drop(active_channel_);
         drop_in_progress();
