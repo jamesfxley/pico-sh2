@@ -78,28 +78,34 @@ class TxPath {
             false;  ///< The HAL reported a write error; flush stopped.
     };
 
-    /// Write until input is ready or a write fails; leave failed writes queued.
+    /// Write until input is ready or a write fails. A refused transfer stays
+    /// framed in scratch and is written again without re-framing (NR-7).
     /// Unframeable cargoes are dropped so they cannot block the queue.
     /// Pending input yields without error to the next receive pass.
     Flushed flush(shtp::ShtpEngine& engine, IHalTransport& hal) {
         Flushed flushed;
         while (const TxCargo* slot = queue_.front()) {
-            auto framed = engine.frame_outbound(
-                slot->channel,
-                std::span<const std::uint8_t>(slot->bytes.data(), slot->length),
-                scratch_);
-            if (!framed.ok()) {
-                queue_.pop();
-                continue;
+            if (held_length_ == 0) {
+                auto framed =
+                    engine.frame_outbound(slot->channel,
+                                          std::span<const std::uint8_t>(
+                                              slot->bytes.data(), slot->length),
+                                          scratch_);
+                if (!framed.ok()) {
+                    queue_.pop();
+                    continue;
+                }
+                held_length_ = framed.value();
             }
             auto written = hal.write_transfer(
-                std::span<const std::uint8_t>(scratch_.data(), framed.value()));
+                std::span<const std::uint8_t>(scratch_.data(), held_length_));
             if (!written.ok()) {
                 flushed.write_refused = true;
                 return flushed;
             }
             ++flushed.written;
             queue_.pop();
+            held_length_ = 0;
             // A duplex write can fill the HAL's receive staging (AR-3).
             if (hal.data_ready()) {
                 break;
@@ -110,9 +116,17 @@ class TxPath {
 
     [[nodiscard]] bool empty() const { return queue_.empty(); }
 
+    /// Drop a held frame without touching the queue; the queued cargo is
+    /// framed again on the next flush. Call when SHTP framing state restarts,
+    /// before the next flush.
+    void discard_framed() { held_length_ = 0; }
+
     /// Discard prior-session requests; clear() is safe because producer and
     /// consumer share one context.
-    void reset() { queue_.clear(); }
+    void reset() {
+        queue_.clear();
+        held_length_ = 0;
+    }
 
    private:
     const shtp::ChannelMap* channels_ = nullptr;
@@ -122,6 +136,7 @@ class TxPath {
         queue_;
     std::array<std::uint8_t, ActiveProfile::MAX_TX_CARGO + shtp::HEADER_SIZE>
         scratch_{};
+    std::size_t held_length_ = 0;  ///< Framed bytes in scratch_; 0 = none.
 };
 
 }  // namespace pico_sh2::detail

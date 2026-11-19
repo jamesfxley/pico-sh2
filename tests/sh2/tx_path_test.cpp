@@ -126,6 +126,36 @@ TEST(TxPath, ARefusedWriteRetriesTheSameBytesAndSequence) {
     EXPECT_EQ(hub.attempts().at(2).at(4), 0xB2);
 }
 
+// A held non-zero frame must be framed again after an SHTP reset (NR-7).
+TEST(TxPath, DiscardedFrameIsReframedWithSequenceZero) {
+    TxPath path;
+    CapturingHub hub;
+    std::array<std::uint8_t, 64> buffer{};
+    pico_sh2::shtp::ShtpEngine engine(buffer);
+    const std::array<std::uint8_t, 1> first{0xC3};
+    const std::array<std::uint8_t, 1> held{0xC4};
+    ASSERT_TRUE(path.enqueue(2, first).ok());
+    ASSERT_EQ(path.flush(engine, hub).written, 1U);
+    ASSERT_TRUE(path.enqueue(2, held).ok());
+
+    hub.refuse_next_write();
+    const auto refused = path.flush(engine, hub);
+    EXPECT_TRUE(refused.write_refused);
+    ASSERT_EQ(hub.attempts().size(), 2U);
+    EXPECT_EQ(hub.attempts().at(1).at(3), 1);
+
+    engine.reset();
+    path.discard_framed();
+
+    const auto sent = path.flush(engine, hub);
+    EXPECT_EQ(sent.written, 1U);
+    EXPECT_FALSE(sent.write_refused);
+    EXPECT_TRUE(path.empty());
+    ASSERT_EQ(hub.attempts().size(), 3U);
+    EXPECT_EQ(hub.attempts().at(2).at(3), 0);
+    EXPECT_EQ(hub.attempts().at(2).at(4), 0xC4);
+}
+
 TEST(TxPath, YieldsForDuplexInputBeforeWritingAgain) {
     TxPath path;
     DuplexHub hub;
