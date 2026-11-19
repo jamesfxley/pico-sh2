@@ -38,9 +38,11 @@ advertisement that supplies those lengths but does not interpret the reports.
   wake handshake: assert WAKE, wait for HINTN, assert CSN and clock the bytes.
 - `ShtpEngine` frames and reassembles cargo, the payload carried by one or more
   SHTP transfers. It retains the lead edge for timestamp reconstruction.
-  Sequence and drop tracking cover `MAX_TRACKED_CHANNELS` to bound memory;
-  higher channels still route without sequence-gap accounting. The limit
-  covers SH-2 bases through 11 without tracking all 256 wire channel numbers.
+  Sequence tracking covers `MAX_TRACKED_CHANNELS` to bound memory; higher
+  channels still route without sequence-gap accounting. The limit covers SH-2
+  bases through 11 without tracking all 256 wire channel numbers. Drop
+  tracking covers every wire channel number, so a dropped cargo is counted
+  once however many transfers carry it.
 - `reports/` holds the `constexpr` decoder table, mapping sensor IDs to
   lengths, default fixed-point scaling exponents (Q points) and decode
   functions.
