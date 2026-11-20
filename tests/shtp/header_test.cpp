@@ -84,6 +84,17 @@ TEST(ShtpHeader, RejectsNonzeroLengthBelowHeaderSize) {
     }
 }
 
+// No transfer is longer than 32766 bytes (NR-1, 1000-3535 §2.2.1).
+TEST(ShtpHeader, RejectsALengthAboveTheLargestTransfer) {
+    constexpr std::array<std::uint8_t, 4> TOO_LONG{0xFF, 0x7F, 0x02, 0x00};
+    EXPECT_EQ(parse_header(TOO_LONG).error(), Sh2Error::BAD_HEADER);
+
+    constexpr std::array<std::uint8_t, 4> LARGEST{0xFE, 0x7F, 0x02, 0x00};
+    const auto header = parse_header(LARGEST);
+    ASSERT_TRUE(header.ok());
+    EXPECT_EQ(header.value().transfer_length, 32766);
+}
+
 TEST(ShtpHeader, SerializeAddsHeaderToCargoLength) {
     std::array<std::uint8_t, 4> out{};
     ASSERT_TRUE(serialize_header(out, 2, SequenceNumber{0x09}, 17).ok());
