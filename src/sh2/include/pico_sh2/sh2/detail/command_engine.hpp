@@ -28,25 +28,26 @@ class CommandEngine {
                       std::span<const std::uint8_t> params,
                       std::uint64_t now_us, std::uint64_t timeout_us,
                       TxPath& tx) {
-        if (command == 0 || command > MAX_COMMAND ||
-            params.size() > COMMAND_MAX_PARAMS) {
-            return Sh2Error::INVALID_ARGUMENT;
-        }
-        if (pending_) {
-            return Sh2Error::BUSY;
-        }
-        std::array<std::uint8_t, COMMAND_REQUEST_SIZE> body{};
-        const std::uint8_t sequence = next_sequence_;
-        serialize_command_request(CommandSequence{sequence}, command, params,
-                                  body);
-        auto queued = tx.enqueue(shtp::ChannelRole::CONTROL, body);
-        if (!queued.ok()) {
-            return queued;
+        auto sequence = enqueue_request(command, params, tx);
+        if (!sequence.ok()) {
+            return sequence.error();
         }
         pending_ = true;
-        pending_sequence_ = sequence;
-        next_sequence_ = static_cast<std::uint8_t>(sequence + 1);
+        pending_sequence_ = sequence.value();
         deadline_us_ = deadline_after(now_us, timeout_us);
+        return Result<void>{};
+    }
+
+    /// Queue a command the hub sends no response to (SR-2). BUSY while a
+    /// command is outstanding; no deadline is armed and the request never
+    /// becomes pending. A later response never completes it.
+    Result<void> send_without_response(std::uint8_t command,
+                                       std::span<const std::uint8_t> params,
+                                       TxPath& tx) {
+        auto sequence = enqueue_request(command, params, tx);
+        if (!sequence.ok()) {
+            return sequence.error();
+        }
         return Result<void>{};
     }
 
@@ -79,6 +80,29 @@ class CommandEngine {
     }
 
    private:
+    /// Validate, serialise and enqueue; returns the sequence on success (SR-2).
+    Result<std::uint8_t> enqueue_request(std::uint8_t command,
+                                         std::span<const std::uint8_t> params,
+                                         TxPath& tx) {
+        if (command == 0 || command > MAX_COMMAND ||
+            params.size() > COMMAND_MAX_PARAMS) {
+            return Sh2Error::INVALID_ARGUMENT;
+        }
+        if (pending_) {
+            return Sh2Error::BUSY;
+        }
+        std::array<std::uint8_t, COMMAND_REQUEST_SIZE> body{};
+        const std::uint8_t sequence = next_sequence_;
+        serialize_command_request(CommandSequence{sequence}, command, params,
+                                  body);
+        auto queued = tx.enqueue(shtp::ChannelRole::CONTROL, body);
+        if (!queued.ok()) {
+            return queued.error();
+        }
+        next_sequence_ = static_cast<std::uint8_t>(sequence + 1);
+        return sequence;
+    }
+
     bool pending_ = false;
     std::uint8_t next_sequence_ = 0;
     std::uint8_t pending_sequence_ = 0;
