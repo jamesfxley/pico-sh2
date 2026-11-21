@@ -39,8 +39,8 @@ struct ShtpHeader {
     }
 };
 
-/// Parse a header; short input, reserved length and non-zero lengths below four
-/// return BAD_HEADER.
+/// Parse a header; short input, reserved length, non-zero lengths below four
+/// and lengths above 32766 return BAD_HEADER (NR-1).
 constexpr Result<ShtpHeader> parse_header(
     std::span<const std::uint8_t> transfer) {
     if (transfer.size() < HEADER_SIZE) {
@@ -54,6 +54,11 @@ constexpr Result<ShtpHeader> parse_header(
     /// Length includes the header (1000-3535 §2.2.1); zero means no cargo
     /// (§2.3.1).
     if (length != 0 && length < HEADER_SIZE) {
+        return Sh2Error::BAD_HEADER;
+    }
+    // The largest cargo is "32766 minus the header bytes" (1000-3535 §2.2.1).
+    constexpr std::uint16_t MAX_TRANSFER_LENGTH = 32766;
+    if (length > MAX_TRANSFER_LENGTH) {
         return Sh2Error::BAD_HEADER;
     }
     ShtpHeader header;
