@@ -30,7 +30,8 @@ inline constexpr std::size_t NUM_ROLES = 6;
 /// The one channel number the protocol fixes (1000-3535 §5.1).
 inline constexpr std::uint8_t COMMAND_CHANNEL = 0;
 
-/// Channel count with sequence and drop tracking; higher channels still route.
+/// Channels with sequence tracking; higher channels route without
+/// sequence-gap accounting.
 inline constexpr std::size_t MAX_TRACKED_CHANNELS = 16;
 
 /// Role-to-number mapping; seeds support operations that must work before

@@ -481,4 +481,129 @@ TEST(ShtpEngine, StrayContinuationsCountOneDropPerCargo) {
     EXPECT_EQ(engine.stats().reassembly_drops, 1U);
 }
 
+// A dropped cargo counts once on every channel number, for a run of stray
+// continuations and for an oversize lead with its continuations (NR-2, BR-1).
+TEST(ShtpEngine, DroppedCargoCountsOnceOnEveryChannel) {
+    for (const std::uint8_t channel : {std::uint8_t{2}, std::uint8_t{15},
+                                       std::uint8_t{16}, std::uint8_t{255}}) {
+        {
+            Capture capture;
+            std::array<std::uint8_t, 64> buffer{};
+            ShtpEngine engine(buffer);
+            engine.set_cargo_sink(sink_for(capture));
+
+            const std::array<std::uint8_t, 6> cont{0x06, 0x80, channel,
+                                                   0x00, 0xEE, 0xFF};
+            for (int i = 0; i < 3; ++i) {
+                EXPECT_EQ(engine.ingest(cont, NO_EDGE).error(),
+                          Sh2Error::REASSEMBLY_DROP);
+            }
+            EXPECT_EQ(engine.stats().reassembly_drops, 1U)
+                << "stray continuations on channel "
+                << static_cast<unsigned>(channel);
+        }
+        {
+            Capture capture;
+            std::array<std::uint8_t, 64> buffer{};
+            ShtpEngine engine(buffer);
+            engine.set_cargo_sink(sink_for(capture));
+
+            const std::array<std::uint8_t, 5> lead{0xC8, 0x00, channel, 0x00,
+                                                   0x01};
+            const std::array<std::uint8_t, 6> cont{0x06, 0x80, channel,
+                                                   0x01, 0x02, 0x03};
+            EXPECT_EQ(engine.ingest(lead, NO_EDGE).error(),
+                      Sh2Error::REASSEMBLY_DROP);
+            for (int i = 0; i < 2; ++i) {
+                EXPECT_EQ(engine.ingest(cont, NO_EDGE).error(),
+                          Sh2Error::REASSEMBLY_DROP);
+            }
+            EXPECT_EQ(engine.stats().reassembly_drops, 1U)
+                << "oversize lead on channel "
+                << static_cast<unsigned>(channel);
+        }
+    }
+}
+
+// A cargo interrupted by traffic on another channel counts one drop per cargo
+// on every channel number (NR-2).
+TEST(ShtpEngine, InterruptedCargoDropsCountPerCargoOnEveryChannel) {
+    for (const std::uint8_t channel : {std::uint8_t{2}, std::uint8_t{15},
+                                       std::uint8_t{16}, std::uint8_t{255}}) {
+        {
+            Capture capture;
+            std::array<std::uint8_t, 64> buffer{};
+            ShtpEngine engine(buffer);
+            engine.set_cargo_sink(sink_for(capture));
+
+            // The lead declares 20 bytes but carries only four payload bytes.
+            const std::array<std::uint8_t, 8> lead{0x18, 0x00, channel, 0x00,
+                                                   0x01, 0x02, 0x03,    0x04};
+            const std::array<std::uint8_t, 6> other_lead{0x06, 0x00, 0x03,
+                                                         0x00, 0x11, 0x22};
+            const std::array<std::uint8_t, 6> cont{0x06, 0x80, channel,
+                                                   0x01, 0x02, 0x03};
+            ASSERT_TRUE(engine.ingest(lead, NO_EDGE).ok());
+            ASSERT_TRUE(engine.ingest(other_lead, NO_EDGE).ok());
+            for (int i = 0; i < 3; ++i) {
+                EXPECT_EQ(engine.ingest(cont, NO_EDGE).error(),
+                          Sh2Error::REASSEMBLY_DROP);
+            }
+            EXPECT_EQ(engine.stats().reassembly_drops, 1U)
+                << "another lead interrupts channel "
+                << static_cast<unsigned>(channel);
+        }
+        {
+            Capture capture;
+            std::array<std::uint8_t, 64> buffer{};
+            ShtpEngine engine(buffer);
+            engine.set_cargo_sink(sink_for(capture));
+
+            const std::array<std::uint8_t, 8> lead{0x18, 0x00, channel, 0x00,
+                                                   0x01, 0x02, 0x03,    0x04};
+            const std::array<std::uint8_t, 6> stray{0x06, 0x80, 0x03,
+                                                    0x00, 0xEE, 0xFF};
+            const std::array<std::uint8_t, 6> cont{0x06, 0x80, channel,
+                                                   0x01, 0x02, 0x03};
+            ASSERT_TRUE(engine.ingest(lead, NO_EDGE).ok());
+            EXPECT_EQ(engine.ingest(stray, NO_EDGE).error(),
+                      Sh2Error::REASSEMBLY_DROP);
+            for (int i = 0; i < 2; ++i) {
+                EXPECT_EQ(engine.ingest(cont, NO_EDGE).error(),
+                          Sh2Error::REASSEMBLY_DROP);
+            }
+            // The interrupted cargo and the stray continuation on channel 3
+            // are two cargoes. The later continuations belong to the dropped
+            // cargo on `channel`, so NR-2 counts two drops in total.
+            EXPECT_EQ(engine.stats().reassembly_drops, 2U)
+                << "stray continuation on channel 3 interrupts channel "
+                << static_cast<unsigned>(channel);
+        }
+    }
+}
+
+// On a high channel the next lead ends discard mode, so a later stray
+// continuation counts a new drop (NR-2).
+TEST(ShtpEngine, LeadAfterDropOnHighChannelEndsDiscard) {
+    constexpr std::uint8_t CHANNEL = 200;
+    Capture capture;
+    std::array<std::uint8_t, 64> buffer{};
+    ShtpEngine engine(buffer);
+    engine.set_cargo_sink(sink_for(capture));
+
+    const std::array<std::uint8_t, 5> lead{0xC8, 0x00, CHANNEL, 0x00, 0x01};
+    const std::array<std::uint8_t, 6> cont{0x06, 0x80, CHANNEL,
+                                           0x01, 0x02, 0x03};
+    EXPECT_EQ(engine.ingest(lead, NO_EDGE).error(), Sh2Error::REASSEMBLY_DROP);
+    EXPECT_EQ(engine.ingest(cont, NO_EDGE).error(), Sh2Error::REASSEMBLY_DROP);
+    EXPECT_EQ(engine.stats().reassembly_drops, 1U);
+
+    const std::array<std::uint8_t, 6> fresh{0x06, 0x00, CHANNEL,
+                                            0x02, 0x11, 0x22};
+    ASSERT_TRUE(engine.ingest(fresh, NO_EDGE).ok());
+    EXPECT_EQ(capture.cargoes.size(), 1U);
+    EXPECT_EQ(engine.ingest(cont, NO_EDGE).error(), Sh2Error::REASSEMBLY_DROP);
+    EXPECT_EQ(engine.stats().reassembly_drops, 2U);
+}
+
 }  // namespace
