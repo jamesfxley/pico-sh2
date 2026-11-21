@@ -84,6 +84,17 @@ TEST(ShtpHeader, RejectsNonzeroLengthBelowHeaderSize) {
     }
 }
 
+// No transfer is longer than 32766 bytes (NR-1, 1000-3535 §2.2.1).
+TEST(ShtpHeader, RejectsALengthAboveTheLargestTransfer) {
+    constexpr std::array<std::uint8_t, 4> TOO_LONG{0xFF, 0x7F, 0x02, 0x00};
+    EXPECT_EQ(parse_header(TOO_LONG).error(), Sh2Error::BAD_HEADER);
+
+    constexpr std::array<std::uint8_t, 4> LARGEST{0xFE, 0x7F, 0x02, 0x00};
+    const auto header = parse_header(LARGEST);
+    ASSERT_TRUE(header.ok());
+    EXPECT_EQ(header.value().transfer_length, 32766);
+}
+
 TEST(ShtpHeader, SerializeAddsHeaderToCargoLength) {
     std::array<std::uint8_t, 4> out{};
     ASSERT_TRUE(serialize_header(out, 2, SequenceNumber{0x09}, 17).ok());
@@ -99,12 +110,15 @@ TEST(ShtpHeader, SerializeAddsHeaderToCargoLength) {
     EXPECT_FALSE(round.value().continuation);
 }
 
-// serialize_header accepts at most 0x7FFB cargo bytes (length 0x7FFF);
-// 1000-3535 §2.2.1 gives the largest cargo as 32766 minus the header.
+// NR-2: the largest cargo is 32766 minus the 4-byte header, 0x7FFA.
 TEST(ShtpHeader, SerializeRejectsOverlongCargo) {
     std::array<std::uint8_t, 4> out{};
-    EXPECT_TRUE(serialize_header(out, 2, SequenceNumber{0}, 0x7FFB).ok());
-    EXPECT_EQ(serialize_header(out, 2, SequenceNumber{0}, 0x7FFC).error(),
+    EXPECT_TRUE(serialize_header(out, 2, SequenceNumber{0}, 0x7FF9).ok());
+    ASSERT_TRUE(serialize_header(out, 2, SequenceNumber{0}, 0x7FFA).ok());
+    const auto round = parse_header(out);
+    ASSERT_TRUE(round.ok());
+    EXPECT_EQ(round.value().transfer_length, 0x7FFE);
+    EXPECT_EQ(serialize_header(out, 2, SequenceNumber{0}, 0x7FFB).error(),
               Sh2Error::CARGO_TOO_LARGE);
 }
 

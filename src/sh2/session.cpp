@@ -65,20 +65,26 @@ constexpr std::uint8_t INITIALIZE_UNSOLICITED =
     command::INITIALIZE | COMMAND_UNSOLICITED_FLAG;  // 0x84
 constexpr std::uint8_t INITIALIZE_OK = 0x00;         // R0 status: success
 
+// The binding argument carries the caller's profile (AR-5). Check it while the
+// first member is being initialised: a profile-sized member written before this
+// call would overwrite a caller object sized by a smaller profile.
+IHalTransport& checked_transport(IHalTransport& hal,
+                                 const SessionBinding& binding) {
+    if (binding != Session::caller_binding()) {
+        std::abort();
+    }
+    return hal;
+}
+
 }  // namespace
 
 Session::Session(IHalTransport& hal, SessionTiming timing,
                  shtp::ChannelMap channels, SessionBinding binding)
-    : hal_(hal),
+    : hal_(checked_transport(hal, binding)),
       timing_(timing),
       channels_(channels),
       engine_(reassembly_),
       startup_(timing) {
-    // The default argument carries the caller's profile. A mismatch can corrupt
-    // memory during member initialisation, before this check.
-    if (binding != caller_binding()) {
-        std::abort();
-    }
     engine_.set_cargo_sink(
         shtp::ShtpEngine::CargoSink::bind<Session, &Session::on_cargo>(this));
     input_.set_event_sink(
@@ -89,8 +95,11 @@ Session::Session(IHalTransport& hal, SessionTiming timing,
 void Session::begin() {
     held_initialize_.reset();
     // Zero timing would release reset or expire a deadline immediately.
+    // Set the fault without a sink: a sink here runs outside service(), and
+    // one that calls begin() recurses without bound (AR-3).
     if (!timing_.valid()) {
-        fail(Sh2Error::INVALID_ARGUMENT);
+        state_ = SessionState::FAULTED;
+        fault_ = Sh2Error::INVALID_ARGUMENT;
         return;
     }
     // service() checks this after each sink to stop traffic from the previous
@@ -341,6 +350,8 @@ void Session::handle_advertisement(std::span<const std::uint8_t> payload) {
     } else if (startup_.phase() != StartupPhase::WAIT_ADVERTISEMENT) {
         // An out-of-phase advertisement starts fresh tables.
         engine_.reset();
+        // A held frame carries a number from before the reset (NR-7).
+        tx_.discard_framed();
         input_.reseed_lengths();
     }
 

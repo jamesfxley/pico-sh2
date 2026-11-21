@@ -386,6 +386,33 @@ TEST(Session, BeginRejectsTimingWithAnyZeroField) {
     }
 }
 
+// A sink that restarts on a startup fault must never run for invalid timing;
+// the fault is read from faulted() and fault() (SR-1, AR-3).
+struct RestartingDiagSink {
+    Session* session = nullptr;
+    int calls = 0;
+
+    void on_diag(pico_sh2::DiagEvent /*event*/) {
+        ++calls;
+        session->begin();
+    }
+};
+
+TEST(Session, InvalidTimingFaultsWithoutCallingTheDiagnosticsSink) {
+    FakeHub hub;
+    Session session(hub, pico_sh2::SessionTiming{});
+    RestartingDiagSink sink{.session = &session, .calls = 0};
+    session.set_diag_sink(
+        Session::DiagSink::bind<RestartingDiagSink,
+                                &RestartingDiagSink::on_diag>(&sink));
+
+    session.begin();
+
+    EXPECT_EQ(sink.calls, 0);
+    EXPECT_TRUE(session.faulted());
+    EXPECT_EQ(session.fault(), Sh2Error::INVALID_ARGUMENT);
+}
+
 TEST(Session, BadHeaderIsCountedNotFatal) {
     FakeHub hub;
     Session session = make_session(hub);

@@ -3,10 +3,15 @@
 // (SR-2, BR-2, OR-2).
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <atomic>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <initializer_list>
 #include <limits>
+#include <new>
 #include <type_traits>
 #include <vector>
 
@@ -35,6 +40,7 @@ using pico_sh2::sh2_test::test_timing;
 using pico_sh2::testing::advertisement;
 using pico_sh2::testing::command_response;
 using pico_sh2::testing::control_channel;
+using pico_sh2::testing::device_channel;
 using pico_sh2::testing::FakeHub;
 using pico_sh2::testing::feature_response;
 using pico_sh2::testing::flush_completed;
@@ -820,6 +826,49 @@ TEST(Session, ProfileBindingDetectsLayoutDrift) {
         "");
 }
 
+// Bytes past the binding's session size, checked when the constructor aborts.
+constexpr unsigned char CANARY = 0xA5;
+std::atomic<const unsigned char*> canary_begin{nullptr};
+std::atomic<const unsigned char*> canary_end{nullptr};
+static_assert(std::atomic<const unsigned char*>::is_always_lock_free,
+              "the signal handler reads the canary bounds without locking");
+
+// _Exit is async-signal-safe; std::exit would run destructors in the handler.
+extern "C" void exit_with_canary_state(int /*signal*/) {
+    for (const unsigned char* byte = canary_begin.load();
+         byte != canary_end.load(); ++byte) {
+        if (*byte != CANARY) {
+            std::_Exit(1);
+        }
+    }
+    std::_Exit(0);
+}
+
+// A binding naming a smaller session size aborts before any byte past that
+// size is written (AR-5).
+TEST(Session, SmallerProfileBindingAbortsBeforeMemberWrites) {
+    pico_sh2::SessionBinding wrong = Session::caller_binding();
+    wrong.session_size =
+        sizeof(Session) / 2 / alignof(Session) * alignof(Session);
+    void* storage =
+        ::operator new(sizeof(Session), std::align_val_t{alignof(Session)});
+    auto* bytes = static_cast<unsigned char*>(storage);
+    FakeHub hub;
+    EXPECT_EXIT(
+        {
+            std::fill_n(bytes, sizeof(Session), CANARY);
+            canary_begin.store(bytes + wrong.session_size);
+            canary_end.store(bytes + sizeof(Session));
+            if (std::signal(SIGABRT, exit_with_canary_state) == SIG_ERR) {
+                std::_Exit(2);
+            }
+            new (storage) Session(hub, test_timing(),
+                                  pico_sh2::shtp::ChannelMap{}, wrong);
+        },
+        testing::ExitedWithCode(0), "");
+    ::operator delete(storage, std::align_val_t{alignof(Session)});
+}
+
 // MAX_ENABLED_SENSORS sizes no Session member, so size alone cannot
 // detect its mismatch (docs/architecture.md, Allocation).
 TEST(Session, ProfileBindingCatchesAKnobThatSizesNothingHere) {
@@ -888,6 +937,65 @@ TEST(Session, ARefusedWriteIsCountedReportedAndRetried) {
     session.service();
     EXPECT_EQ(session.counters().write_errors, 1U);
     EXPECT_EQ(hub.writes().size(), writes_before + 1);
+}
+
+// A refusal must not consume the number of the next cargo (NR-7).
+TEST(Session, ARefusedWriteKeepsTheNextSequenceNumber) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    drive_to_ready(hub, session);
+    const std::size_t writes_before = hub.writes().size();
+
+    ASSERT_TRUE(
+        session.get_feature(pico_sh2::reports::SensorId::ACCELEROMETER).ok());
+    session.service();
+    ASSERT_EQ(hub.writes().size(), writes_before + 1);
+    const std::uint8_t previous = hub.writes().at(writes_before).frame.at(3);
+
+    ASSERT_TRUE(
+        session.get_feature(pico_sh2::reports::SensorId::ACCELEROMETER).ok());
+    hub.fail_next_write(Sh2Error::BUS_ERROR);
+    session.service();
+    ASSERT_EQ(hub.writes().size(), writes_before + 1);
+    session.service();
+    ASSERT_EQ(hub.writes().size(), writes_before + 2);
+
+    EXPECT_EQ(hub.writes().at(writes_before + 1).frame.at(3),
+              static_cast<std::uint8_t>(previous + 1))
+        << "a refused write consumed a second sequence number";
+}
+
+// A held frame surviving an out-of-phase advertisement is reframed (NR-7).
+TEST(Session, AnOutOfPhaseAdvertisementReframesTheHeldCargo) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    advance_to_wait_advertisement(hub, session);
+
+    // The first advertisement moves startup past WAIT_ADVERTISEMENT.
+    hub.queue_transfer(frame(0, 0, advertisement()), 0);
+    session.service();
+    ASSERT_EQ(session.startup_phase(),
+              pico_sh2::StartupPhase::WAIT_RESET_COMPLETE);
+
+    // One accepted device write leaves the engine's number at one.
+    ASSERT_TRUE(session.request_reset().ok());
+    session.service();
+    const std::size_t writes_before = hub.writes().size();
+
+    // The next device cargo is held with that number after a refusal.
+    ASSERT_TRUE(session.request_reset().ok());
+    hub.fail_next_write(Sh2Error::BUS_ERROR);
+    session.service();
+    ASSERT_EQ(hub.writes().size(), writes_before);
+
+    // A second advertisement arrives out of phase and resets SHTP framing.
+    hub.queue_transfer(frame(0, 0, advertisement()), 0);
+    session.service();
+
+    ASSERT_EQ(hub.writes().size(), writes_before + 1);
+    const auto& written = hub.writes().back().frame;
+    EXPECT_EQ(written.at(2), device_channel());
+    EXPECT_EQ(written.at(3), 0);
 }
 
 }  // namespace

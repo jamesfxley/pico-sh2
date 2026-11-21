@@ -52,7 +52,8 @@ and three startup announcements by calling `service()`:
 <!-- example: session_bring_up -->
 ```cpp
 // Timing is part-specific; SH-2 and SHTP define no defaults.
-// Zero timing faults with INVALID_ARGUMENT.
+// Zero timing faults with INVALID_ARGUMENT; read it from fault(), as no
+// sink is called.
 const pico_sh2::SessionTiming timing{
     .reset_hold_us = 2'000,
     .boot_delay_us = 100'000,
@@ -182,12 +183,9 @@ operation or one more `frs_timeout_us` expires (SR-3). Retry after it falls.
 Commands have no failure completion: `command_pending()` falls on timeout or
 reset, reported by the diagnostics or reset sink.
 
-Sinks are synchronous and may call requests or `begin()`. A diagnostics sink
-that calls `begin()` on the `STARTUP_FAULT` that `begin()` raises for invalid
-timing recurses without bound. While an
-FRS sink borrows record words, a read requested from it waits until return so
-the
-words stay valid. A write returns `BUSY`; issue it from the consumer loop.
+Sinks are synchronous and may call requests or `begin()`. While an FRS sink
+borrows record words, a read requested from it waits until return so the words
+stay valid. A write returns `BUSY`; issue it from the consumer loop.
 If the deferred read cannot then be queued, its error completes at the sink.
 
 Without borrowed words, a sink request runs normally. It succeeds or returns an
@@ -226,6 +224,5 @@ Counters wrap at 2^32. Subtract successive readings to measure increments across
 one wrap (OR-1).
 
 `set_diag_sink()` reports startup faults, hub resets, command and FRS timeouts,
-and transport write errors. The callback runs inside `service()`, or inside
-`begin()` when invalid timing faults startup. Keep it short; log the first
-occurrence and count repeats to limit output.
+and transport write errors. The callback runs inside `service()`. Keep it
+short; log the first occurrence and count repeats to limit output.
