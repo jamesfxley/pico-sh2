@@ -121,4 +121,8 @@ inline constexpr std::uint16_t LENGTH_MASK = 0x7FFF;
 /// Transfer header length in bytes, counted in the length field.
 inline constexpr std::size_t HEADER_SIZE = 4;
 
+/// Largest transfer length, header included. The 15-bit field can hold 0x7FFF,
+/// but the largest cargo is "32766 minus the header bytes" (1000-3535 §2.2.1).
+inline constexpr std::uint16_t MAX_TRANSFER_LENGTH = 32766;
+
 }  // namespace pico_sh2::shtp
