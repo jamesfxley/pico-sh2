@@ -180,8 +180,6 @@ class Session {
     void set_flush_sink(FlushSink sink) { flush_sink_ = sink; }
 
     /// \param sink receives the diagnostics events (OR-2).
-    /// A sink that calls begin() on the STARTUP_FAULT that begin() raises for
-    /// invalid timing recurses without bound.
     void set_diag_sink(DiagSink sink) { diag_sink_ = sink; }
 
     // Requests enqueue cargo for service(). They return NOT_READY before READY
@@ -233,8 +231,8 @@ class Session {
     }
 
     /// Start the non-blocking handshake; invalid timing faults with
-    /// INVALID_ARGUMENT. Otherwise assert reset and enter STARTING; service()
-    /// advances startup.
+    /// INVALID_ARGUMENT and calls no sink. Otherwise assert reset and enter
+    /// STARTING; service() advances startup.
     void begin();
 
     /// Advance startup, drain and route transfers, then enforce the phase

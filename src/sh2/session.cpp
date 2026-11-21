@@ -95,8 +95,11 @@ Session::Session(IHalTransport& hal, SessionTiming timing,
 void Session::begin() {
     held_initialize_.reset();
     // Zero timing would release reset or expire a deadline immediately.
+    // Set the fault without a sink: a sink here runs outside service(), and
+    // one that calls begin() recurses without bound (AR-3).
     if (!timing_.valid()) {
-        fail(Sh2Error::INVALID_ARGUMENT);
+        state_ = SessionState::FAULTED;
+        fault_ = Sh2Error::INVALID_ARGUMENT;
         return;
     }
     // service() checks this after each sink to stop traffic from the previous
