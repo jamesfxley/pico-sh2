@@ -119,7 +119,9 @@ Version compatibility follows
   header bytes" (1000-3535 §2.2.1), so no transfer is longer than 32766 bytes.
 - **NR-2 — Fragmentation asymmetry.** Inbound cargoes are reassembled across
   continuation transfers into a single buffer; outbound framing fails with
-  `CARGO_TOO_LARGE` rather than fragmenting. 1000-3535 §2.4 permits a hub that
+  `CARGO_TOO_LARGE` rather than fragmenting. One transfer carries at most
+  32762 cargo bytes: the largest cargo is "32766 minus the header bytes"
+  (1000-3535 §2.2.1), and the header is 4 bytes. 1000-3535 §2.4 permits a hub that
   cannot support fragmented writes to advertise identical maximum transfer and
   cargo lengths, in which case "all legal writes must be performed in a single
   non-fragmented transfer", and a host that fragments anyway earns a distinct error from the hub (§5.1.2.1, Figure 15,

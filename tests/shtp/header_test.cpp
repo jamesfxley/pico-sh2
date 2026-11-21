@@ -110,12 +110,15 @@ TEST(ShtpHeader, SerializeAddsHeaderToCargoLength) {
     EXPECT_FALSE(round.value().continuation);
 }
 
-// serialize_header accepts at most 0x7FFB cargo bytes (length 0x7FFF);
-// 1000-3535 §2.2.1 gives the largest cargo as 32766 minus the header.
+// NR-2: the largest cargo is 32766 minus the 4-byte header, 0x7FFA.
 TEST(ShtpHeader, SerializeRejectsOverlongCargo) {
     std::array<std::uint8_t, 4> out{};
-    EXPECT_TRUE(serialize_header(out, 2, SequenceNumber{0}, 0x7FFB).ok());
-    EXPECT_EQ(serialize_header(out, 2, SequenceNumber{0}, 0x7FFC).error(),
+    EXPECT_TRUE(serialize_header(out, 2, SequenceNumber{0}, 0x7FF9).ok());
+    ASSERT_TRUE(serialize_header(out, 2, SequenceNumber{0}, 0x7FFA).ok());
+    const auto round = parse_header(out);
+    ASSERT_TRUE(round.ok());
+    EXPECT_EQ(round.value().transfer_length, 0x7FFE);
+    EXPECT_EQ(serialize_header(out, 2, SequenceNumber{0}, 0x7FFB).error(),
               Sh2Error::CARGO_TOO_LARGE);
 }
 

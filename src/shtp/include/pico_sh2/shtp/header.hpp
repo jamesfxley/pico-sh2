@@ -84,11 +84,12 @@ constexpr Result<void> serialize_header(std::span<std::uint8_t> out,
     if (out.size() < HEADER_SIZE) {
         return Sh2Error::INVALID_ARGUMENT;
     }
-    const std::size_t transfer_length = cargo_length + HEADER_SIZE;
-    /// The length field is 15 bits; a cargo that overruns it cannot be framed.
-    if (transfer_length > LENGTH_MASK) {
+    // NR-2: 0x7FFF is the 15-bit maximum, but SHTP caps a transfer at 32766.
+    constexpr std::size_t MAX_TRANSFER_LENGTH = 32766;
+    if (cargo_length > MAX_TRANSFER_LENGTH - HEADER_SIZE) {
         return Sh2Error::CARGO_TOO_LARGE;
     }
+    const std::size_t transfer_length = cargo_length + HEADER_SIZE;
     pico_util::write_le<std::uint16_t>(
         out, static_cast<std::uint16_t>(transfer_length));
     out[2] = channel;
