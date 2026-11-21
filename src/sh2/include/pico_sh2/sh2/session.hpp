@@ -202,6 +202,18 @@ class Session {
     Result<void> send_command(std::uint8_t command,
                               std::span<const std::uint8_t> params = {});
 
+    /// Queue a command the hub sends no response to (SR-2), such as Configure
+    /// Periodic DCD Save (0x09), Clear DCD and Reset (0x0B) or Wheel Request
+    /// (0x0F) (1000-3625 §6.4.7, §6.4.9.1, §6.4.13.1).
+    /// Arguments are checked and errors returned as for send_command().
+    /// The request never becomes outstanding and arms no deadline.
+    /// It consumes a sequence number.
+    /// It returns BUSY while a command is outstanding.
+    /// A response that arrives anyway still reaches the command sink and
+    /// completes nothing.
+    Result<void> send_command_without_response(
+        std::uint8_t command, std::span<const std::uint8_t> params = {});
+
     /// True while a command is outstanding; another returns BUSY (SR-2).
     [[nodiscard]] bool command_pending() const { return commands_.pending(); }
 

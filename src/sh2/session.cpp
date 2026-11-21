@@ -696,6 +696,18 @@ Result<void> Session::send_command(std::uint8_t command,
     return sent;
 }
 
+Result<void> Session::send_command_without_response(
+    std::uint8_t command, std::span<const std::uint8_t> params) {
+    if (!ready()) {
+        return Sh2Error::NOT_READY;
+    }
+    auto sent = commands_.send_without_response(command, params, tx_);
+    if (sent.ok()) {
+        ++counters_.commands_sent;
+    }
+    return sent;
+}
+
 Result<void> Session::frs_read(std::uint16_t frs_type) {
     if (!ready()) {
         return Sh2Error::NOT_READY;

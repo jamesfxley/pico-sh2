@@ -276,6 +276,186 @@ TEST(Session, InvalidCommandRejected) {
     EXPECT_EQ(session.send_command(128).error(), Sh2Error::INVALID_ARGUMENT);
 }
 
+// A no-response request reaches control without holding the command slot
+// (SR-2).
+TEST(Session, NoResponseCommandIsWrittenWithoutHoldingTheSlot) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    drive_to_ready(hub, session);
+
+    const std::vector<std::uint8_t> params{0x01, 0x02};
+    ASSERT_TRUE(session
+                    .send_command_without_response(
+                        pico_sh2::command::PERIODIC_DCD, params)
+                    .ok());
+    EXPECT_FALSE(session.command_pending());
+    session.service();
+
+    ASSERT_EQ(hub.writes().size(), 1U);
+    const auto& sent = hub.writes()[0].frame;
+    EXPECT_EQ(sent[2], control_channel());
+    EXPECT_EQ(sent[4], 0xF2);  // Command Request
+    EXPECT_EQ(sent[5], 0);
+    EXPECT_EQ(sent[6], pico_sh2::command::PERIODIC_DCD);
+    EXPECT_EQ(sent[7], 0x01);
+    EXPECT_EQ(sent[8], 0x02);
+}
+
+// A no-response request leaves the slot free for the next command (SR-2).
+TEST(Session, ACommandAfterANoResponseCommandIsAccepted) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    drive_to_ready(hub, session);
+
+    ASSERT_TRUE(
+        session.send_command_without_response(pico_sh2::command::PERIODIC_DCD)
+            .ok());
+    EXPECT_TRUE(session.send_command(pico_sh2::command::COUNTER).ok());
+    EXPECT_TRUE(session.command_pending());
+}
+
+// A no-response request arms no deadline (SR-2, TR-1).
+TEST(Session, NoResponseCommandDoesNotCountATimeout) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    drive_to_ready(hub, session);
+
+    ASSERT_TRUE(
+        session.send_command_without_response(pico_sh2::command::PERIODIC_DCD)
+            .ok());
+    hub.advance_time(500'001);  // past command_timeout_us
+    session.service();
+    EXPECT_EQ(session.counters().command_timeouts, 0U);
+}
+
+// A no-response request cannot produce a timeout event (SR-2, OR-2).
+TEST(Session, NoResponseCommandRaisesNoDiagnostic) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    DiagObserver observer;
+    session.set_diag_sink(
+        pico_sh2::Session::DiagSink::bind<DiagObserver, &DiagObserver::on_diag>(
+            &observer));
+    drive_to_ready(hub, session);
+
+    ASSERT_TRUE(
+        session.send_command_without_response(pico_sh2::command::PERIODIC_DCD)
+            .ok());
+    hub.advance_time(500'001);
+    session.service();
+    EXPECT_TRUE(observer.events.empty());
+}
+
+// A no-response request is refused while a command is outstanding (SR-2).
+TEST(Session, NoResponseCommandIsBusyWhileACommandIsOutstanding) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    drive_to_ready(hub, session);
+
+    ASSERT_TRUE(session.send_command(pico_sh2::command::COUNTER).ok());
+    const std::size_t writes_before = hub.writes().size();
+    EXPECT_EQ(
+        session.send_command_without_response(pico_sh2::command::PERIODIC_DCD)
+            .error(),
+        Sh2Error::BUSY);
+    session.service();
+    EXPECT_EQ(hub.writes().size(), writes_before + 1);
+}
+
+// A no-response request consumes the next sequence number (SR-2).
+TEST(Session, NoResponseCommandAdvancesTheSequence) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    CommandCapture cap;
+    session.set_command_sink(
+        pico_sh2::Session::CommandSink::bind<CommandCapture,
+                                             &CommandCapture::on_command>(
+            &cap));
+    drive_to_ready(hub, session);
+
+    ASSERT_TRUE(
+        session.send_command_without_response(pico_sh2::command::PERIODIC_DCD)
+            .ok());
+    ASSERT_TRUE(session.send_command(pico_sh2::command::COUNTER).ok());
+    session.service();
+
+    ASSERT_EQ(hub.writes().size(), 2U);
+    EXPECT_EQ(hub.writes()[0].frame[5], 0);
+    EXPECT_EQ(hub.writes()[1].frame[5], 1);
+
+    hub.queue_transfer(
+        frame(2, 1, command_response(pico_sh2::command::COUNTER, 1, false)), 0);
+    session.service();
+    EXPECT_FALSE(session.command_pending());
+    EXPECT_EQ(session.counters().command_completions, 1U);
+    ASSERT_EQ(cap.responses.size(), 1U);
+}
+
+// A response to a no-response request reaches the sink but completes nothing
+// (SR-2).
+TEST(Session, AResponseToANoResponseCommandCompletesNothing) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    CommandCapture cap;
+    session.set_command_sink(
+        pico_sh2::Session::CommandSink::bind<CommandCapture,
+                                             &CommandCapture::on_command>(
+            &cap));
+    drive_to_ready(hub, session);
+
+    ASSERT_TRUE(
+        session.send_command_without_response(pico_sh2::command::PERIODIC_DCD)
+            .ok());
+    session.service();
+    hub.queue_transfer(
+        frame(2, 1,
+              command_response(pico_sh2::command::PERIODIC_DCD, 0, false)),
+        0);
+    session.service();
+
+    EXPECT_FALSE(session.command_pending());
+    EXPECT_EQ(session.counters().command_completions, 0U);
+    ASSERT_EQ(cap.responses.size(), 1U);
+    EXPECT_EQ(cap.responses[0].command, pico_sh2::command::PERIODIC_DCD);
+    EXPECT_EQ(cap.responses[0].command_sequence, 0);
+}
+
+// A no-response request returns NOT_READY before the handshake completes and
+// sends nothing (SR-2).
+TEST(Session, NoResponseCommandBeforeReadyIsNotReady) {
+    FakeHub hub;
+    Session session = make_session(hub);
+
+    EXPECT_EQ(
+        session.send_command_without_response(pico_sh2::command::PERIODIC_DCD)
+            .error(),
+        Sh2Error::NOT_READY);
+    session.service();
+    EXPECT_TRUE(hub.writes().empty());
+}
+
+// Invalid commands and parameter blocks send nothing (SR-2).
+TEST(Session, InvalidNoResponseCommandIsRejected) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    drive_to_ready(hub, session);
+    const std::vector<std::uint8_t> too_many(pico_sh2::COMMAND_MAX_PARAMS + 1,
+                                             0x01);
+
+    EXPECT_EQ(session.send_command_without_response(0).error(),
+              Sh2Error::INVALID_ARGUMENT);
+    EXPECT_EQ(session.send_command_without_response(128).error(),
+              Sh2Error::INVALID_ARGUMENT);
+    EXPECT_EQ(session
+                  .send_command_without_response(
+                      pico_sh2::command::ME_CALIBRATION, too_many)
+                  .error(),
+              Sh2Error::INVALID_ARGUMENT);
+    EXPECT_FALSE(session.command_pending());
+    session.service();
+    EXPECT_TRUE(hub.writes().empty());
+}
+
 TEST(Session, TxQueueOverflowSurfaced) {
     FakeHub hub;
     Session session = make_session(hub);

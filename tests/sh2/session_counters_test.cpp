@@ -400,6 +400,26 @@ TEST(SessionCounters, ACommandSentMovesCommandsSentAndCargoesOut) {
               (std::vector<std::string>{"cargoes_out", "commands_sent"}));
 }
 
+// A no-response send past its timeout moves only its send counters (OR-1,
+// SR-2).
+TEST(SessionCounters,
+     ANoResponseCommandPastItsTimeoutMovesOnlyItsSendCounters) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    drive_to_ready(hub, session);
+
+    const SessionCounters before = session.counters();
+    ASSERT_TRUE(
+        session.send_command_without_response(pico_sh2::command::PERIODIC_DCD)
+            .ok());
+    session.service();
+    hub.advance_time(500'001);
+    session.service();
+
+    EXPECT_EQ(moved(before, session.counters()),
+              (std::vector<std::string>{"cargoes_out", "commands_sent"}));
+}
+
 TEST(SessionCounters, AMatchedResponseMovesCargoesInAndCommandCompletions) {
     FakeHub hub;
     Session session = make_session(hub);
