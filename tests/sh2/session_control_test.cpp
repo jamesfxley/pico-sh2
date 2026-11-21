@@ -3,10 +3,15 @@
 // (SR-2, BR-2, OR-2).
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <atomic>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <initializer_list>
 #include <limits>
+#include <new>
 #include <type_traits>
 #include <vector>
 
@@ -639,6 +644,49 @@ TEST(Session, ProfileBindingDetectsLayoutDrift) {
                                   pico_sh2::shtp::ChannelMap{}, misaligned);
         },
         "");
+}
+
+// Bytes past the binding's session size, checked when the constructor aborts.
+constexpr unsigned char CANARY = 0xA5;
+std::atomic<const unsigned char*> canary_begin{nullptr};
+std::atomic<const unsigned char*> canary_end{nullptr};
+static_assert(std::atomic<const unsigned char*>::is_always_lock_free,
+              "the signal handler reads the canary bounds without locking");
+
+// _Exit is async-signal-safe; std::exit would run destructors in the handler.
+extern "C" void exit_with_canary_state(int /*signal*/) {
+    for (const unsigned char* byte = canary_begin.load();
+         byte != canary_end.load(); ++byte) {
+        if (*byte != CANARY) {
+            std::_Exit(1);
+        }
+    }
+    std::_Exit(0);
+}
+
+// A binding naming a smaller session size aborts before any byte past that
+// size is written (AR-5).
+TEST(Session, SmallerProfileBindingAbortsBeforeMemberWrites) {
+    pico_sh2::SessionBinding wrong = Session::caller_binding();
+    wrong.session_size =
+        sizeof(Session) / 2 / alignof(Session) * alignof(Session);
+    void* storage =
+        ::operator new(sizeof(Session), std::align_val_t{alignof(Session)});
+    auto* bytes = static_cast<unsigned char*>(storage);
+    FakeHub hub;
+    EXPECT_EXIT(
+        {
+            std::fill_n(bytes, sizeof(Session), CANARY);
+            canary_begin.store(bytes + wrong.session_size);
+            canary_end.store(bytes + sizeof(Session));
+            if (std::signal(SIGABRT, exit_with_canary_state) == SIG_ERR) {
+                std::_Exit(2);
+            }
+            new (storage) Session(hub, test_timing(),
+                                  pico_sh2::shtp::ChannelMap{}, wrong);
+        },
+        testing::ExitedWithCode(0), "");
+    ::operator delete(storage, std::align_val_t{alignof(Session)});
 }
 
 // MAX_ENABLED_SENSORS sizes no Session member, so size alone cannot

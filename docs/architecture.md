@@ -38,9 +38,11 @@ advertisement that supplies those lengths but does not interpret the reports.
   wake handshake: assert WAKE, wait for HINTN, assert CSN and clock the bytes.
 - `ShtpEngine` frames and reassembles cargo, the payload carried by one or more
   SHTP transfers. It retains the lead edge for timestamp reconstruction.
-  Sequence and drop tracking cover `MAX_TRACKED_CHANNELS` to bound memory;
-  higher channels still route without sequence-gap accounting. The limit
-  covers SH-2 bases through 11 without tracking all 256 wire channel numbers.
+  Sequence tracking covers `MAX_TRACKED_CHANNELS` to bound memory; higher
+  channels still route without sequence-gap accounting. The limit covers SH-2
+  bases through 11 without tracking all 256 wire channel numbers. Drop
+  tracking covers every wire channel number, so a dropped cargo is counted
+  once however many transfers carry it.
 - `reports/` holds the `constexpr` decoder table, mapping sensor IDs to
   lengths, default fixed-point scaling exponents (Q points) and decode
   functions.
@@ -111,12 +113,14 @@ writes storage the library reuses for other transfers.
 
 The profile reaches consumers as a public compile definition. A different
 consumer profile changes layout and can corrupt memory. The constructor
-compares caller and archive bindings, including capacities, size and alignment,
-and aborts on disagreement. `MAX_ENABLED_SENSORS` is checked separately because
-it sizes a driver's table without changing `Session`. A hand-written build or
-stale archive can bypass CMake propagation; a consumer can call
-`binding_matches()` before construction to log the mismatch. On a nosys target,
-the constructor's abort alone can leave a silent boot failure.
+compares caller and archive bindings, including capacities, size and
+alignment, before any member is initialised. It aborts on disagreement, so a
+mismatch leaves a caller object sized by a smaller profile untouched.
+`MAX_ENABLED_SENSORS` is checked separately because it sizes a driver's table
+without changing `Session`. A hand-written build or stale archive can bypass
+CMake propagation; a consumer can call `binding_matches()` before construction
+to log the mismatch. On a nosys target, the constructor's abort alone can leave
+a silent boot failure.
 
 ## Counters
 

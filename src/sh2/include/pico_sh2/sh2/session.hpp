@@ -65,8 +65,7 @@ enum class DiagEvent : std::uint8_t {
 // NOLINTBEGIN(cppcoreguidelines-macro-usage,bugprone-macro-parentheses)
 /// Diagnostic counters generated from session_counters.def (OR-1).
 struct SessionCounters {
-/// One counter from session_counters.def; undefined again after use. The
-/// comment in its body documents each member it generates.
+/// One counter from session_counters.def; undefined again after use.
 #define PICO_SH2_COUNTER(name, description)                       \
     /** One counter; session_counters.def says what it counts. */ \
     std::uint32_t name = 0;
@@ -181,8 +180,6 @@ class Session {
     void set_flush_sink(FlushSink sink) { flush_sink_ = sink; }
 
     /// \param sink receives the diagnostics events (OR-2).
-    /// A sink that calls begin() on the STARTUP_FAULT that begin() raises for
-    /// invalid timing recurses without bound.
     void set_diag_sink(DiagSink sink) { diag_sink_ = sink; }
 
     // Requests enqueue cargo for service(). They return NOT_READY before READY
@@ -234,8 +231,8 @@ class Session {
     }
 
     /// Start the non-blocking handshake; invalid timing faults with
-    /// INVALID_ARGUMENT. Otherwise assert reset and enter STARTING; service()
-    /// advances startup.
+    /// INVALID_ARGUMENT and calls no sink. Otherwise assert reset and enter
+    /// STARTING; service() advances startup.
     void begin();
 
     /// Advance startup, drain and route transfers, then enforce the phase
@@ -362,7 +359,8 @@ class Session {
     /// The borrowed transport.
     [[nodiscard]] IHalTransport& hal() const noexcept { return hal_.get(); }
 
-    /// Consumer-owned transport; it outlives this Session.
+    /// Consumer-owned transport; it outlives this Session. Keep it first: its
+    /// initialiser checks the binding before a profile-sized member is written.
     std::reference_wrapper<IHalTransport> hal_;
     SessionTiming timing_;
     shtp::ChannelMap channels_;
