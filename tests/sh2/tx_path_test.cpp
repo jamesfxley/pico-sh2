@@ -57,6 +57,105 @@ class DuplexHub final : public pico_sh2::IHalTransport {
     pico_sh2::testing::FakeHub hub_;
 };
 
+// FakeHub keeps only successful writes; this seam also keeps refused ones
+// so a retry can be compared with its attempt (NR-7).
+// final: the public non-virtual destructor is safe only while nothing
+// derives from this class.
+class CapturingHub final : public pico_sh2::IHalTransport {
+   public:
+    bool data_ready() override { return hub_.data_ready(); }
+
+    pico_sh2::Result<pico_sh2::ReceivedTransfer> read_transfer(
+        std::span<std::uint8_t> dst) override {
+        return hub_.read_transfer(dst);
+    }
+
+    pico_sh2::Result<void> write_transfer(
+        std::span<const std::uint8_t> frame) override {
+        attempts_.emplace_back(frame.begin(), frame.end());
+        if (refuse_next_) {
+            refuse_next_ = false;
+            return Sh2Error::BUS_ERROR;
+        }
+        return hub_.write_transfer(frame);
+    }
+
+    std::uint64_t now_us() override { return hub_.now_us(); }
+
+    void set_reset(bool asserted) override { hub_.set_reset(asserted); }
+
+    void refuse_next_write() { refuse_next_ = true; }
+
+    [[nodiscard]] const auto& attempts() const { return attempts_; }
+
+   private:
+    pico_sh2::testing::FakeHub hub_;
+    std::vector<std::vector<std::uint8_t>> attempts_;
+    bool refuse_next_ = false;
+};
+
+// A refused write leaves its frame in scratch for the next pass (NR-7).
+TEST(TxPath, ARefusedWriteRetriesTheSameBytesAndSequence) {
+    TxPath path;
+    CapturingHub hub;
+    std::array<std::uint8_t, 64> buffer{};
+    pico_sh2::shtp::ShtpEngine engine(buffer);
+    const std::array<std::uint8_t, 1> first_payload{0xA1};
+    const std::array<std::uint8_t, 1> second_payload{0xB2};
+    ASSERT_TRUE(path.enqueue(2, first_payload).ok());
+    ASSERT_TRUE(path.enqueue(2, second_payload).ok());
+
+    hub.refuse_next_write();
+    const auto refused = path.flush(engine, hub);
+    EXPECT_EQ(refused.written, 0U);
+    EXPECT_TRUE(refused.write_refused);
+    EXPECT_FALSE(path.empty());
+
+    const auto retried = path.flush(engine, hub);
+    EXPECT_EQ(retried.written, 2U);
+    EXPECT_FALSE(retried.write_refused);
+    EXPECT_TRUE(path.empty());
+    ASSERT_EQ(hub.attempts().size(), 3U);
+
+    EXPECT_EQ(hub.attempts().at(1), hub.attempts().at(0))
+        << "the retry must repeat the refused frame";
+    EXPECT_EQ(hub.attempts().at(0).at(3), 0);
+    EXPECT_EQ(hub.attempts().at(1).at(3), 0);
+    EXPECT_EQ(hub.attempts().at(2).at(3), 1);
+    EXPECT_EQ(hub.attempts().at(1).at(4), 0xA1);
+    EXPECT_EQ(hub.attempts().at(2).at(4), 0xB2);
+}
+
+// A held non-zero frame must be framed again after an SHTP reset (NR-7).
+TEST(TxPath, DiscardedFrameIsReframedWithSequenceZero) {
+    TxPath path;
+    CapturingHub hub;
+    std::array<std::uint8_t, 64> buffer{};
+    pico_sh2::shtp::ShtpEngine engine(buffer);
+    const std::array<std::uint8_t, 1> first{0xC3};
+    const std::array<std::uint8_t, 1> held{0xC4};
+    ASSERT_TRUE(path.enqueue(2, first).ok());
+    ASSERT_EQ(path.flush(engine, hub).written, 1U);
+    ASSERT_TRUE(path.enqueue(2, held).ok());
+
+    hub.refuse_next_write();
+    const auto refused = path.flush(engine, hub);
+    EXPECT_TRUE(refused.write_refused);
+    ASSERT_EQ(hub.attempts().size(), 2U);
+    EXPECT_EQ(hub.attempts().at(1).at(3), 1);
+
+    engine.reset();
+    path.discard_framed();
+
+    const auto sent = path.flush(engine, hub);
+    EXPECT_EQ(sent.written, 1U);
+    EXPECT_FALSE(sent.write_refused);
+    EXPECT_TRUE(path.empty());
+    ASSERT_EQ(hub.attempts().size(), 3U);
+    EXPECT_EQ(hub.attempts().at(2).at(3), 0);
+    EXPECT_EQ(hub.attempts().at(2).at(4), 0xC4);
+}
+
 TEST(TxPath, YieldsForDuplexInputBeforeWritingAgain) {
     TxPath path;
     DuplexHub hub;
@@ -130,6 +229,36 @@ TEST(TxPath, ResetDropsEverythingStaged) {
     for (std::size_t i = 0; i < ActiveProfile::TX_QUEUE_DEPTH; ++i) {
         EXPECT_TRUE(path.enqueue(0, payload).ok());
     }
+}
+
+// reset() drops a held frame as well as the queue (NR-7).
+TEST(TxPath, ResetClearsAHeldFrame) {
+    TxPath path;
+    CapturingHub hub;
+    std::array<std::uint8_t, 64> buffer{};
+    pico_sh2::shtp::ShtpEngine engine(buffer);
+    const std::array<std::uint8_t, 1> first{0xD1};
+    const std::array<std::uint8_t, 1> refused{0xD2};
+    const std::array<std::uint8_t, 1> replacement{0xD3};
+    ASSERT_TRUE(path.enqueue(2, first).ok());
+    ASSERT_EQ(path.flush(engine, hub).written, 1U);
+    ASSERT_TRUE(path.enqueue(2, refused).ok());
+
+    hub.refuse_next_write();
+    const auto failed = path.flush(engine, hub);
+    EXPECT_TRUE(failed.write_refused);
+    ASSERT_EQ(hub.attempts().size(), 2U);
+
+    path.reset();
+    ASSERT_TRUE(path.empty());
+    ASSERT_TRUE(path.enqueue(2, replacement).ok());
+
+    const auto sent = path.flush(engine, hub);
+    EXPECT_EQ(sent.written, 1U);
+    ASSERT_EQ(hub.attempts().size(), 3U);
+    EXPECT_EQ(hub.attempts().at(2).at(4), 0xD3);
+    // Framing numbers live in the engine, which reset() does not touch.
+    EXPECT_EQ(hub.attempts().at(2).at(3), 2);
 }
 
 TEST(TxPath, AnUnboundRoleHasNowhereToGo) {
