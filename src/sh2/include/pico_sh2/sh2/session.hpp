@@ -361,7 +361,8 @@ class Session {
     /// The borrowed transport.
     [[nodiscard]] IHalTransport& hal() const noexcept { return hal_.get(); }
 
-    /// Consumer-owned transport; it outlives this Session.
+    /// Consumer-owned transport; it outlives this Session. Keep it first: its
+    /// initialiser checks the binding before a profile-sized member is written.
     std::reference_wrapper<IHalTransport> hal_;
     SessionTiming timing_;
     shtp::ChannelMap channels_;
