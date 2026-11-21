@@ -152,7 +152,7 @@ kind returns `BUSY` while one is outstanding.
 Use `send_command_without_response()` for a command the hub sends no response
 to, such as Configure Periodic DCD Save (0x09), Clear DCD and Reset (0x0B)
 or Wheel Request (0x0F) (1000-3625 §6.4.7, §6.4.9.1, §6.4.13.1).
-The caller decides whether another command needs a response.
+The library keeps no list of such commands; the caller chooses the call.
 
 <!-- example: transactions -->
 ```cpp
