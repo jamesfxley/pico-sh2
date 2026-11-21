@@ -6,8 +6,10 @@
 /// Outbound cargo must fit one transfer under library policy.
 
 #include <array>
+#include <bitset>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <span>
 
 #include "pico_sh2/shtp/channels.hpp"
@@ -47,8 +49,9 @@ class ShtpEngine {
         /// Transfers whose header was reserved, short or otherwise malformed.
         std::uint32_t bad_headers = 0;
         /// Cargoes dropped whole: oversize, stray continuation or interruption.
-        /// Continuations count once per dropped cargo on tracked channels; each
-        /// stray continuation counts on untracked channels.
+        /// Continuations of a dropped cargo are discarded without counting
+        /// again until the next lead transfer on the cargo's channel (NR-2,
+        /// BR-1).
         std::uint32_t reassembly_drops = 0;
         /// Gaps in a channel's inbound sequence, so reports might have been
         /// lost.
@@ -109,9 +112,13 @@ class ShtpEngine {
     std::array<std::int16_t, MAX_TRACKED_CHANNELS> rx_sequence_{};
     /// Next outbound sequence per channel.
     std::array<std::uint8_t, MAX_TRACKED_CHANNELS> tx_sequence_{};
-    /// Per channel: the cargo in flight was dropped, so its continuations are
-    /// discarded silently until the channel's next lead transfer.
-    std::array<bool, MAX_TRACKED_CHANNELS> discarding_{};
+    /// One discard state per value of the wire channel type.
+    static constexpr std::size_t CHANNEL_COUNT =
+        static_cast<std::size_t>(std::numeric_limits<std::uint8_t>::max()) + 1;
+    /// Per wire channel number: the cargo in flight was dropped, so its
+    /// continuations are discarded silently until that channel's next lead
+    /// transfer.
+    std::bitset<CHANNEL_COUNT> discarding_;
 
     CargoSink sink_;
     Stats stats_;

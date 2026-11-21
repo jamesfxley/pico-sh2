@@ -65,8 +65,7 @@ enum class DiagEvent : std::uint8_t {
 // NOLINTBEGIN(cppcoreguidelines-macro-usage,bugprone-macro-parentheses)
 /// Diagnostic counters generated from session_counters.def (OR-1).
 struct SessionCounters {
-/// One counter from session_counters.def; undefined again after use. The
-/// comment in its body documents each member it generates.
+/// One counter from session_counters.def; undefined again after use.
 #define PICO_SH2_COUNTER(name, description)                       \
     /** One counter; session_counters.def says what it counts. */ \
     std::uint32_t name = 0;
@@ -360,7 +359,8 @@ class Session {
     /// The borrowed transport.
     [[nodiscard]] IHalTransport& hal() const noexcept { return hal_.get(); }
 
-    /// Consumer-owned transport; it outlives this Session.
+    /// Consumer-owned transport; it outlives this Session. Keep it first: its
+    /// initialiser checks the binding before a profile-sized member is written.
     std::reference_wrapper<IHalTransport> hal_;
     SessionTiming timing_;
     shtp::ChannelMap channels_;
