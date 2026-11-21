@@ -258,6 +258,20 @@ TEST(ShtpEngine, CountsBadHeaderAndDoesNotDeliver) {
     EXPECT_EQ(capture.cargoes.size(), 0U);
 }
 
+// A lead length of 32767 is malformed, not an oversize cargo (NR-1).
+TEST(ShtpEngine, ALeadLengthAboveTheLargestTransferIsABadHeader) {
+    Capture capture;
+    std::array<std::uint8_t, 1024> buffer{};
+    ShtpEngine engine(buffer);
+    engine.set_cargo_sink(sink_for(capture));
+
+    std::array<std::uint8_t, 6> lead{0xFF, 0x7F, 0x02, 0x00, 0x01, 0x02};
+    EXPECT_EQ(engine.ingest(lead, NO_EDGE).error(), Sh2Error::BAD_HEADER);
+    EXPECT_EQ(engine.stats().bad_headers, 1U);
+    EXPECT_EQ(engine.stats().reassembly_drops, 0U);
+    EXPECT_EQ(capture.cargoes.size(), 0U);
+}
+
 TEST(ShtpEngine, EmptyTransferIsIdleNoOp) {
     Capture capture;
     std::array<std::uint8_t, 64> buffer{};
