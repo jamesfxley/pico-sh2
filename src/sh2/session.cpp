@@ -350,6 +350,8 @@ void Session::handle_advertisement(std::span<const std::uint8_t> payload) {
     } else if (startup_.phase() != StartupPhase::WAIT_ADVERTISEMENT) {
         // An out-of-phase advertisement starts fresh tables.
         engine_.reset();
+        // A held frame carries a number from before the reset (NR-7).
+        tx_.discard_framed();
         input_.reseed_lengths();
     }
 

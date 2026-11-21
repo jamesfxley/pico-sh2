@@ -40,6 +40,7 @@ using pico_sh2::sh2_test::test_timing;
 using pico_sh2::testing::advertisement;
 using pico_sh2::testing::command_response;
 using pico_sh2::testing::control_channel;
+using pico_sh2::testing::device_channel;
 using pico_sh2::testing::FakeHub;
 using pico_sh2::testing::feature_response;
 using pico_sh2::testing::flush_completed;
@@ -756,6 +757,65 @@ TEST(Session, ARefusedWriteIsCountedReportedAndRetried) {
     session.service();
     EXPECT_EQ(session.counters().write_errors, 1U);
     EXPECT_EQ(hub.writes().size(), writes_before + 1);
+}
+
+// A refusal must not consume the number of the next cargo (NR-7).
+TEST(Session, ARefusedWriteKeepsTheNextSequenceNumber) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    drive_to_ready(hub, session);
+    const std::size_t writes_before = hub.writes().size();
+
+    ASSERT_TRUE(
+        session.get_feature(pico_sh2::reports::SensorId::ACCELEROMETER).ok());
+    session.service();
+    ASSERT_EQ(hub.writes().size(), writes_before + 1);
+    const std::uint8_t previous = hub.writes().at(writes_before).frame.at(3);
+
+    ASSERT_TRUE(
+        session.get_feature(pico_sh2::reports::SensorId::ACCELEROMETER).ok());
+    hub.fail_next_write(Sh2Error::BUS_ERROR);
+    session.service();
+    ASSERT_EQ(hub.writes().size(), writes_before + 1);
+    session.service();
+    ASSERT_EQ(hub.writes().size(), writes_before + 2);
+
+    EXPECT_EQ(hub.writes().at(writes_before + 1).frame.at(3),
+              static_cast<std::uint8_t>(previous + 1))
+        << "a refused write consumed a second sequence number";
+}
+
+// A held frame surviving an out-of-phase advertisement is reframed (NR-7).
+TEST(Session, AnOutOfPhaseAdvertisementReframesTheHeldCargo) {
+    FakeHub hub;
+    Session session = make_session(hub);
+    advance_to_wait_advertisement(hub, session);
+
+    // The first advertisement moves startup past WAIT_ADVERTISEMENT.
+    hub.queue_transfer(frame(0, 0, advertisement()), 0);
+    session.service();
+    ASSERT_EQ(session.startup_phase(),
+              pico_sh2::StartupPhase::WAIT_RESET_COMPLETE);
+
+    // One accepted device write leaves the engine's number at one.
+    ASSERT_TRUE(session.request_reset().ok());
+    session.service();
+    const std::size_t writes_before = hub.writes().size();
+
+    // The next device cargo is held with that number after a refusal.
+    ASSERT_TRUE(session.request_reset().ok());
+    hub.fail_next_write(Sh2Error::BUS_ERROR);
+    session.service();
+    ASSERT_EQ(hub.writes().size(), writes_before);
+
+    // A second advertisement arrives out of phase and resets SHTP framing.
+    hub.queue_transfer(frame(0, 0, advertisement()), 0);
+    session.service();
+
+    ASSERT_EQ(hub.writes().size(), writes_before + 1);
+    const auto& written = hub.writes().back().frame;
+    EXPECT_EQ(written.at(2), device_channel());
+    EXPECT_EQ(written.at(3), 0);
 }
 
 }  // namespace
