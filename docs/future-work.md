@@ -132,6 +132,8 @@ The specification marks these manual omissions `UNCONFIRMED`:
 - Whether rebase deltas sum.
 - Initialize/reset ordering and the actual channel advertisement.
 - Q point 2's applicability to gyro-integrated rotation vectors.
+- Whether a hub expects host sequence numbers to restart after an SHTP reset
+  (NR-7).
 
 No bench observations are recorded.
 
