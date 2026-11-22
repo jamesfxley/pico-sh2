@@ -40,7 +40,7 @@ struct ShtpHeader {
 };
 
 /// Parse a header; short input, reserved length, non-zero lengths below four
-/// and lengths above 32766 return BAD_HEADER (NR-1).
+/// and lengths above MAX_TRANSFER_LENGTH return BAD_HEADER (NR-1).
 constexpr Result<ShtpHeader> parse_header(
     std::span<const std::uint8_t> transfer) {
     if (transfer.size() < HEADER_SIZE) {
@@ -56,8 +56,6 @@ constexpr Result<ShtpHeader> parse_header(
     if (length != 0 && length < HEADER_SIZE) {
         return Sh2Error::BAD_HEADER;
     }
-    // The largest cargo is "32766 minus the header bytes" (1000-3535 §2.2.1).
-    constexpr std::uint16_t MAX_TRANSFER_LENGTH = 32766;
     if (length > MAX_TRANSFER_LENGTH) {
         return Sh2Error::BAD_HEADER;
     }
@@ -74,7 +72,8 @@ struct SequenceNumber {
     std::uint8_t value;  ///< The sequence number itself.
 };
 
-/// Serialise an unfragmented header; length includes its four bytes.
+/// Serialise an unfragmented header; length includes its four bytes. A cargo
+/// above MAX_TRANSFER_LENGTH minus the header returns CARGO_TOO_LARGE (NR-2).
 /// SHTP permits fragmentation but hubs may reject it (1000-3535 §2.3.1, §2.4).
 /// BNO08X parts reject fragmented writes (1000-3927 §1.3.1).
 constexpr Result<void> serialize_header(std::span<std::uint8_t> out,
@@ -84,8 +83,6 @@ constexpr Result<void> serialize_header(std::span<std::uint8_t> out,
     if (out.size() < HEADER_SIZE) {
         return Sh2Error::INVALID_ARGUMENT;
     }
-    // NR-2: 0x7FFF is the 15-bit maximum, but SHTP caps a transfer at 32766.
-    constexpr std::size_t MAX_TRANSFER_LENGTH = 32766;
     if (cargo_length > MAX_TRANSFER_LENGTH - HEADER_SIZE) {
         return Sh2Error::CARGO_TOO_LARGE;
     }
