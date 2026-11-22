@@ -92,6 +92,7 @@ TEST(Channels, LengthFieldMasks) {
     EXPECT_EQ(LENGTH_MASK, 0x7FFF);
     EXPECT_EQ(RESERVED_LENGTH, 0xFFFF);
     EXPECT_EQ(HEADER_SIZE, 4U);
+    EXPECT_EQ(MAX_TRANSFER_LENGTH, 32766);
 }
 
 }  // namespace
