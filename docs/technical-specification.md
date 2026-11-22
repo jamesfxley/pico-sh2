@@ -181,7 +181,9 @@ Version compatibility follows
   once for each cargo sent or cargo continuation sent" (1000-3535 §2.2.1). A
   cargo whose write is refused stays queued and is retried with the same bytes
   and number. A reset of SHTP framing state restarts the numbers; a held cargo
-  that survives the reset is framed again.
+  that survives the reset is framed again. Whether a hub expects the host to
+  restart its numbers after an SHTP reset is UNCONFIRMED (FW-5): 1000-3535
+  §2.2.1 does not say.
 
 ## 4. Session requirements (SR) — SH-2
 
