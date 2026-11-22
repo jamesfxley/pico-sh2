@@ -62,7 +62,7 @@ event variant is UNCONFIRMED.
 ### Affected repositories
 
 pico-sh2 would hold decoder additions and golden vectors. pico-bno085 would
-supply bench captures; its partner entry cites this one.
+supply bench captures; its partner entry, pico-bno085:FW-6, cites this one.
 
 ## FW-3 — UART-SHTP and UART-RVC transports
 
@@ -90,7 +90,7 @@ twice (EN-06.1).
 ### Affected repositories
 
 pico-sh2 owns the transport interface. pico-bno085 would implement the revised
-interface; its partner entry cites this one.
+interface; its partner entry, pico-bno085:FW-5, cites this one.
 
 ## FW-4 — Streaming reassembly
 
@@ -155,4 +155,4 @@ observation needs a compatibility assessment when behaviour changes.
 ### Affected repositories
 
 pico-sh2 owns the unresolved protocol questions. pico-bno085 hosts the bench;
-its partner entry cites this one.
+its partner entry, pico-bno085:FW-2, cites this one.
